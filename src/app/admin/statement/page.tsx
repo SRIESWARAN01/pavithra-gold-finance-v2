@@ -236,7 +236,7 @@ function AdminLiveStatementContent() {
       const outstandingInterest = currentLoan.outstanding_interest || 0;
       const totalOutstanding = remainingPrincipal + outstandingInterest;
       const totalAmountPaid = principalPaid + interestPaid;
-      const apr = currentLoan.interest_rate_apr || 12;
+      const apr = currentLoan.interest_rate_apr || 18;
       const monthlyRate = apr / 12;
 
       const lastPayment = relevantPayments.length > 0 ? relevantPayments[0].payment_date : null;
@@ -268,7 +268,7 @@ function AdminLiveStatementContent() {
       const outstandingInterest = loans.reduce((acc, l) => acc + (l.outstanding_interest || 0), 0);
       const totalOutstanding = remainingPrincipal + outstandingInterest;
       const totalAmountPaid = principalPaid + interestPaid;
-      const avgApr = loans.length > 0 ? loans.reduce((acc, l) => acc + (l.interest_rate_apr || 12), 0) / loans.length : 12;
+      const avgApr = loans.length > 0 ? loans.reduce((acc, l) => acc + (l.interest_rate_apr || 18), 0) / loans.length : 18;
 
       const lastPayment = relevantPayments.length > 0 ? relevantPayments[0].payment_date : null;
 
@@ -724,7 +724,7 @@ function AdminLiveStatementContent() {
                 Live Financial Summary & Dues
               </h3>
               <span className="text-xs text-gray-500">
-                Interest: <strong>{financials.apr}% APR</strong> ({financials.monthlyRate}%/mo)
+                Interest: <strong>{financials.apr}% APR</strong> ({financials.monthlyRate.toFixed(2)}%/mo)
               </span>
             </div>
 

@@ -17,6 +17,9 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import type { Loan, LoanInsert, LoanUpdate, LoanStatus, LoanWithBalance } from '@/types/database';
+import { createNotification } from '@/lib/db/notifications';
+
+export const VALID_LOAN_APR_RATES = [18, 20, 22, 24, 30] as const;
 
 const COLLECTION = 'loans';
 
@@ -242,6 +245,70 @@ export async function updateLoanStatus(
   if (reason) updateData.cancelled_reason = reason;
 
   return updateLoan(id, updateData);
+}
+
+/**
+ * Update loan APR percentage with authorized Admin action and audit log.
+ * Valid options: 18%, 20%, 22%, 24%, 30%.
+ */
+export async function updateLoanApr(
+  loanId: string,
+  newApr: number,
+  actor: { id: string; name: string; role: string },
+  reason: string
+): Promise<Loan> {
+  if (!VALID_LOAN_APR_RATES.includes(newApr as any)) {
+    throw new Error(`Invalid APR ${newApr}%. Must be one of the approved rates: 18%, 20%, 22%, 24%, or 30%.`);
+  }
+  if (!reason || reason.trim().length === 0) {
+    throw new Error('An authorized administrative reason is mandatory when modifying a loan APR.');
+  }
+
+  const loanRef = doc(db, COLLECTION, loanId);
+  const snap = await getDoc(loanRef);
+  if (!snap.exists()) {
+    throw new Error('Loan record not found in database.');
+  }
+
+  const loanData = snap.data();
+  const oldApr = loanData.interest_rate_apr;
+  const now = new Date().toISOString();
+
+  // 1. Update loan APR in Firestore
+  await updateDoc(loanRef, {
+    interest_rate_apr: newApr,
+    updated_at: now,
+  });
+
+  // 2. Record in audit_logs collection for compliance and traceability
+  await addDoc(collection(db, 'audit_logs'), {
+    actor_id: actor.id,
+    actor_name: actor.name,
+    actor_role: actor.role,
+    action_type: 'Loan APR Rate Modified',
+    affected_entity: 'loans',
+    affected_entity_id: loanId,
+    old_state: { interest_rate_apr: oldApr },
+    new_state: { interest_rate_apr: newApr, reason: reason.trim() },
+    timestamp: now,
+  });
+
+  // 3. Notify customer of interest rate revision
+  if (loanData.customer_id) {
+    try {
+      await createNotification({
+        recipient_id: loanData.customer_id,
+        type: 'Interest_Updated',
+        title: `Loan Interest Rate Revised (${loanData.loan_number})`,
+        message: `The annual interest rate for your Gold Loan ${loanData.loan_number} has been revised from ${oldApr}% to ${newApr}% APR by authorized administration. Reason: ${reason.trim()}`,
+      });
+    } catch (e) {
+      console.warn('Customer notification notice:', e);
+    }
+  }
+
+  const updatedSnap = await getDoc(loanRef);
+  return { id: updatedSnap.id, ...updatedSnap.data() } as unknown as Loan;
 }
 
 /**

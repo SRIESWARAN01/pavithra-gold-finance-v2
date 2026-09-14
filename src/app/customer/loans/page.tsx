@@ -45,6 +45,7 @@ export default function CustomerLoans() {
             outstanding: (loanData.principal_amount - (loanData.total_principal_paid || 0)) + (loanData.outstanding_interest || 0),
             interestAccrued: loanData.outstanding_interest || 0,
             status: loanData.status,
+            apr: loanData.interest_rate_apr || 18,
             dueDate: loanData.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString() : 'N/A',
             goldWeight: `${totalWeight.toFixed(2)}g`,
             disbursedDate: loanData.origination_date ? new Date(loanData.origination_date).toLocaleDateString() : 'N/A',
@@ -198,10 +199,16 @@ export default function CustomerLoans() {
             </div>
 
             <div className="flex justify-between items-center mt-3 text-[10px]">
-              <span className="text-gray-400">
-                <Scale size={10} className="inline mr-1" />
-                Gold Pledged: <span className="text-[#2563EB] font-semibold">{loan.goldWeight}</span>
-              </span>
+              <div className="flex items-center gap-3 text-gray-400">
+                <span>
+                  <Scale size={10} className="inline mr-1" />
+                  Gold Pledged: <span className="text-[#2563EB] font-semibold">{loan.goldWeight}</span>
+                </span>
+                <span>•</span>
+                <span className="font-semibold text-blue-900 bg-blue-50 px-2 py-0.5 rounded border border-blue-100">
+                  {loan.apr}% APR
+                </span>
+              </div>
               <span className="text-gray-400 group-hover:text-[#2563EB] transition-colors font-medium">
                 View Details →
               </span>

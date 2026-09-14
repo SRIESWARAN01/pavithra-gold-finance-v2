@@ -2,12 +2,12 @@
 
 import React, { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { ChevronRight, Coins, Scale, Clock, Download, XCircle, Printer, FileText, CheckCircle2 } from 'lucide-react';
+import { ChevronRight, Coins, Scale, Clock, Download, XCircle, Printer, FileText, CheckCircle2, ShieldAlert, Percent, ChevronDown, AlertTriangle } from 'lucide-react';
 import PDFPreviewModal from '@/components/PDFPreviewModal';
 import { getPdfApiUrl, downloadPdfDocument, printPdfDocument } from '@/lib/pdfHelper';
 // Firebase: all queries go through src/lib/db/* modules (already migrated)
-import { isFirebaseConfigured } from '@/lib/auth';
-import { getLoan, updateLoanStatus } from '@/lib/db/loans';
+import { isFirebaseConfigured, getCurrentProfile } from '@/lib/auth';
+import { getLoan, updateLoanStatus, updateLoanApr, VALID_LOAN_APR_RATES } from '@/lib/db/loans';
 import { getGoldByLoan } from '@/lib/db/gold';
 import { getPaymentsByLoan } from '@/lib/db/payments';
 import type { Loan, GoldCollateral, Payment } from '@/types/database';
@@ -21,6 +21,14 @@ export default function LoanDetail() {
   const [collateral, setCollateral] = useState<GoldCollateral[]>([]);
   const [payments, setPayments] = useState<Payment[]>([]);
   const [loading, setLoading] = useState(true);
+  const [currentUser, setCurrentUser] = useState<any | null>(null);
+
+  // APR Modification Modal State
+  const [isAprModalOpen, setIsAprModalOpen] = useState(false);
+  const [selectedNewApr, setSelectedNewApr] = useState<number | ''>('');
+  const [aprChangeReason, setAprChangeReason] = useState('');
+  const [aprSubmitting, setAprSubmitting] = useState(false);
+  const [aprModalError, setAprModalError] = useState<string | null>(null);
 
   // PDF Preview States
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
@@ -45,6 +53,9 @@ export default function LoanDetail() {
         setCollateral(col);
         const pay = await getPaymentsByLoan(id);
         setPayments(pay);
+
+        const prof = await getCurrentProfile();
+        if (prof) setCurrentUser(prof);
       } else {
         setLoan(null);
         setCollateral([]);
@@ -54,6 +65,46 @@ export default function LoanDetail() {
       console.error('Failed to load loan detail page data:', err);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleUpdateApr = async () => {
+    if (selectedNewApr === '' || !VALID_LOAN_APR_RATES.includes(selectedNewApr as any)) {
+      setAprModalError('Please select an Annual Interest Rate (APR %) from the available options (18%, 20%, 22%, 24%, 30%).');
+      return;
+    }
+    if (selectedNewApr === loan.interest_rate_apr) {
+      setAprModalError('Selected APR is identical to the current rate. Please select a different rate.');
+      return;
+    }
+    if (!aprChangeReason.trim()) {
+      setAprModalError('An administrative justification / reason is mandatory.');
+      return;
+    }
+
+    setAprSubmitting(true);
+    setAprModalError(null);
+    try {
+      await updateLoanApr(
+        loan.id,
+        Number(selectedNewApr),
+        {
+          id: currentUser?.id || 'admin',
+          name: currentUser?.name || 'Authorized Officer',
+          role: currentUser?.role || 'Admin',
+        },
+        aprChangeReason
+      );
+
+      alert(`Loan APR successfully modified to ${selectedNewApr}%. Audit log recorded.`);
+      setIsAprModalOpen(false);
+      setSelectedNewApr('');
+      setAprChangeReason('');
+      await loadLoanDetails();
+    } catch (err: any) {
+      setAprModalError(err.message || 'Failed to update loan APR.');
+    } finally {
+      setAprSubmitting(false);
     }
   };
 
@@ -171,19 +222,46 @@ export default function LoanDetail() {
             Loan Summary
           </h3>
           <div className="space-y-3 text-xs">
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">Principal Amount</span>
+              <span className="font-semibold text-gray-900">Rs. {loan.principal_amount.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">Remaining Principal</span>
+              <span className="font-semibold text-gray-900">Rs. {remainingPrincipal.toLocaleString()}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-400">Annual Interest Rate (APR %)</span>
+              <div className="flex items-center gap-2">
+                <span className="font-bold text-gray-900">{loan.interest_rate_apr}% APR</span>
+                {(currentUser?.role === 'Admin' || currentUser?.role === 'Manager' || !currentUser) && (
+                  <button
+                    onClick={() => {
+                      setSelectedNewApr('');
+                      setAprChangeReason('');
+                      setAprModalError(null);
+                      setIsAprModalOpen(true);
+                    }}
+                    className="px-2 py-0.5 bg-blue-50 hover:bg-blue-100 text-[#2563EB] text-[10px] font-bold rounded flex items-center gap-1 border border-blue-200 cursor-pointer transition"
+                    title="Authorized Admin Action: Adjust APR %"
+                  >
+                    <Percent size={10} />
+                    Adjust APR
+                  </button>
+                )}
+              </div>
+            </div>
             {[
-              { label: 'Principal Amount', value: `Rs. ${loan.principal_amount.toLocaleString()}`, highlight: true },
-              { label: 'Remaining Principal', value: `Rs. ${remainingPrincipal.toLocaleString()}`, highlight: true },
-              { label: 'Interest Rate', value: `${loan.interest_rate_apr}% APR` },
+              { label: 'Monthly Interest', value: `Rs. ${Math.round((remainingPrincipal * (loan.interest_rate_apr / 100)) / 12).toLocaleString()} (${((loan.interest_rate_apr || 18)/12).toFixed(2)}%/mo)` },
               { label: 'Disbursed Date', value: loan.origination_date ? new Date(loan.origination_date).toLocaleDateString() : 'N/A' },
               { label: 'Maturity / Due Date', value: loan.maturity_date ? new Date(loan.maturity_date).toLocaleDateString() : 'N/A' },
               { label: 'Loan Duration', value: `${loan.loan_period_months || 12} Months` },
-              { label: 'Accrued Interest Due', value: `Rs. ${(loan.outstanding_interest || 0).toLocaleString()}`, color: 'text-amber-400' },
+              { label: 'Accrued Interest Due', value: `Rs. ${(loan.outstanding_interest || 0).toLocaleString()}`, color: 'text-amber-500 font-bold' },
               { label: 'Total Outstanding Balance', value: `Rs. ${totalOutstanding.toLocaleString()}`, color: 'text-[#2563EB]', bold: true },
             ].map((item, i) => (
               <div key={i} className="flex justify-between items-center">
                 <span className="text-gray-400">{item.label}</span>
-                <span className={`font-semibold ${item.color || (item.highlight ? 'text-gray-900' : 'text-gray-600')} ${item.bold ? 'font-bold text-sm' : ''}`}>
+                <span className={`font-semibold ${item.color || 'text-gray-600'} ${item.bold ? 'font-bold text-sm' : ''}`}>
                   {item.value}
                 </span>
               </div>
@@ -423,6 +501,143 @@ export default function LoanDetail() {
         pdfUrl={previewUrl}
         title={previewTitle}
       />
+
+      {/* Authorized APR Adjustment Modal */}
+      {isAprModalOpen && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-gray-100 space-y-5">
+            <div className="flex items-start justify-between border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-9 h-9 rounded-xl bg-amber-50 border border-amber-200 flex items-center justify-center text-amber-600">
+                  <ShieldAlert size={20} />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-gray-900 font-outfit">Authorized Loan APR Modification</h3>
+                  <p className="text-[11px] text-gray-500">PGF Audit & Compliance Registry</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setIsAprModalOpen(false)}
+                className="text-gray-400 hover:text-gray-600 p-1 cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Audit Warning */}
+            <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl text-xs text-amber-900 flex items-start gap-2.5">
+              <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
+              <p className="text-[11px] leading-relaxed">
+                <strong>Statutory Notice:</strong> Modifying the APR rate alters contractual daily interest accrual. This action requires an authorized administrative reason and will be permanently recorded in the system audit log.
+              </p>
+            </div>
+
+            {aprModalError && (
+              <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-600 font-medium flex items-center gap-2">
+                <AlertTriangle size={14} className="shrink-0" />
+                <span>{aprModalError}</span>
+              </div>
+            )}
+
+            {/* Loan Context */}
+            <div className="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-xl text-xs border border-gray-100">
+              <div>
+                <span className="text-gray-400 text-[10px] block">Loan Number</span>
+                <span className="font-bold text-gray-800 font-mono">{loan.loan_number}</span>
+              </div>
+              <div>
+                <span className="text-gray-400 text-[10px] block">Current APR Rate</span>
+                <span className="font-bold text-gray-800">{loan.interest_rate_apr}% APR</span>
+              </div>
+            </div>
+
+            {/* APR Dropdown Selection */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-gray-800 block">
+                Annual Interest Rate (APR %) *
+              </label>
+              <div className="relative">
+                <select
+                  value={selectedNewApr}
+                  onChange={(e) => setSelectedNewApr(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full bg-white border border-gray-200 focus:border-[#2563EB] text-gray-900 text-sm font-bold rounded-lg pl-3 pr-9 py-2.5 outline-none transition cursor-pointer appearance-none"
+                >
+                  <option value="" disabled>Select Annual Interest Rate (APR %)...</option>
+                  <option value={18}>18% (1.50% / month)</option>
+                  <option value={20}>20% (1.67% / month)</option>
+                  <option value={22}>22% (1.83% / month)</option>
+                  <option value={24}>24% (2.00% / month)</option>
+                  <option value={30}>30% (2.50% / month)</option>
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-500">
+                  <ChevronDown size={16} />
+                </div>
+              </div>
+            </div>
+
+            {/* Dynamic Comparison Preview */}
+            {typeof selectedNewApr === 'number' && (
+              <div className="p-3 bg-blue-50/70 border border-blue-200 rounded-xl text-xs space-y-1 text-blue-950">
+                <span className="text-[10px] uppercase font-bold text-blue-800 block">Rate Impact Preview:</span>
+                <div className="flex justify-between text-xs pt-1">
+                  <span>Monthly Interest on Remaining Principal:</span>
+                  <strong className="text-blue-900">
+                    ₹ {Math.round((remainingPrincipal * (selectedNewApr / 100)) / 12).toLocaleString('en-IN')} / mo
+                  </strong>
+                </div>
+                <div className="flex justify-between text-[11px] text-blue-800">
+                  <span>Daily Accrual Rate:</span>
+                  <span>₹ {((remainingPrincipal * (selectedNewApr / 100)) / 365).toFixed(2)} / day</span>
+                </div>
+              </div>
+            )}
+
+            {/* Reason for Change (Mandatory) */}
+            <div className="space-y-1.5">
+              <label className="text-xs font-bold text-gray-800 block">
+                Administrative Justification / Reason *
+              </label>
+              <textarea
+                rows={3}
+                value={aprChangeReason}
+                onChange={(e) => setAprChangeReason(e.target.value)}
+                placeholder="State the regulatory or approved business reason for altering this loan's APR (e.g., Manager rate concession, borrower restructuring agreement)..."
+                className="w-full bg-white border border-gray-200 focus:border-[#2563EB] text-gray-900 text-xs rounded-lg p-3 outline-none transition"
+              />
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={() => setIsAprModalOpen(false)}
+                disabled={aprSubmitting}
+                className="px-4 py-2 border border-gray-200 rounded-xl text-xs font-semibold text-gray-600 hover:bg-gray-50 transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleUpdateApr}
+                disabled={aprSubmitting}
+                className="px-5 py-2 bg-[#2563EB] hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm disabled:opacity-50"
+              >
+                {aprSubmitting ? (
+                  <>
+                    <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Recording...
+                  </>
+                ) : (
+                  <>
+                    <ShieldAlert size={14} />
+                    Confirm &amp; Log Audit
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -22,11 +22,12 @@ import {
   Sparkles,
   Share2,
   MessageSquare,
-  ShieldCheck
+  ShieldCheck,
+  ChevronDown
 } from 'lucide-react';
 import { isFirebaseConfigured, getCurrentProfile } from '@/lib/auth';
 import { searchProfiles, getProfile } from '@/lib/db/profiles';
-import { createLoan } from '@/lib/db/loans';
+import { createLoan, VALID_LOAN_APR_RATES } from '@/lib/db/loans';
 import { addGoldItemsBatch } from '@/lib/db/gold';
 import { createNotification } from '@/lib/db/notifications';
 import { createApprovalRequest } from '@/lib/db/approvals';
@@ -404,8 +405,8 @@ function NewLoanWizardContent() {
     // Employee Request → Admin/Manager Approval → Approved Amount → Eligible for Disbursement
     const requiresApproval = isHighLtv || isEmployee;
 
-    if (interestApr === '' || typeof interestApr !== 'number' || interestApr <= 0) {
-      setError('Please enter a valid annual interest rate (APR %) greater than zero.');
+    if (interestApr === '' || typeof interestApr !== 'number' || !VALID_LOAN_APR_RATES.includes(interestApr as any)) {
+      setError('Please select an Annual Interest Rate (APR %) from the 5 available options: 18%, 20%, 22%, 24%, or 30%.');
       setLoading(false);
       return;
     }
@@ -1093,17 +1094,37 @@ function NewLoanWizardContent() {
             <div className="space-y-1.5">
               <label className="text-xs text-gray-700 font-bold block">Annual Interest Rate (APR %) *</label>
               <div className="relative">
-                <input
-                  type="number"
-                  step="0.01"
-                  placeholder="e.g. 12.00"
+                <select
                   value={interestApr}
-                  onChange={(e) => setInterestApr(e.target.value === '' ? '' : parseFloat(e.target.value))}
-                  className="w-full bg-[#F9FAFB] border border-[#E5E7EB] focus:border-[#2563EB] text-gray-900 text-sm font-bold rounded-lg px-4 py-2.5 outline-none transition"
-                />
-                <span className="absolute right-3 top-2.5 text-gray-400 text-xs font-bold">% APR</span>
+                  onChange={(e) => setInterestApr(e.target.value === '' ? '' : Number(e.target.value))}
+                  className="w-full bg-[#F9FAFB] border border-[#E5E7EB] focus:border-[#2563EB] text-gray-900 text-sm font-bold rounded-lg pl-3 pr-9 py-2.5 outline-none transition cursor-pointer appearance-none"
+                >
+                  <option value="" disabled>Select Annual Interest Rate (APR %)...</option>
+                  <option value={18}>18% (1.50% / month)</option>
+                  <option value={20}>20% (1.67% / month)</option>
+                  <option value={22}>22% (1.83% / month)</option>
+                  <option value={24}>24% (2.00% / month)</option>
+                  <option value={30}>30% (2.50% / month)</option>
+                </select>
+                <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-gray-500">
+                  <ChevronDown size={16} />
+                </div>
               </div>
-              <p className="text-[10px] text-gray-500">Monthly rate: {typeof interestApr === 'number' && interestApr > 0 ? (interestApr / 12).toFixed(2) : '—'}% per month</p>
+              {typeof interestApr === 'number' && interestApr > 0 ? (
+                <div className="flex flex-wrap items-center justify-between text-[11px] text-blue-900 bg-blue-50/70 p-2.5 rounded-lg border border-blue-200/80 font-medium mt-1.5 gap-2">
+                  <span>Monthly Rate: <strong>{(interestApr / 12).toFixed(2)}% / mo</strong></span>
+                  <span>
+                    Monthly Interest: <strong>₹ {typeof loanPrincipal === 'number' && loanPrincipal > 0 ? Math.round((loanPrincipal * (interestApr / 100)) / 12).toLocaleString('en-IN') : '0'} / mo</strong>
+                  </span>
+                  <span>
+                    Daily Accrual: <strong>₹ {typeof loanPrincipal === 'number' && loanPrincipal > 0 ? ((loanPrincipal * (interestApr / 100)) / 365).toFixed(2) : '0.00'} / day</strong>
+                  </span>
+                </div>
+              ) : (
+                <p className="text-[10px] text-amber-700 font-semibold mt-1">
+                  * Select one of the five approved APR rates (18%, 20%, 22%, 24%, 30%) to compute interest.
+                </p>
+              )}
             </div>
           </div>
 

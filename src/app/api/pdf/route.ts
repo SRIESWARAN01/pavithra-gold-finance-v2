@@ -342,8 +342,8 @@ async function generatePdfResponse(params: any) {
     docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('PLEDGE LOAN TERMS & POLICY', 311, curY + 8);
     docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
           .text(`Sanctioned Principal: ${formatINR(loanData?.principal_amount || 0)}`, 311, curY + 22)
-          .text(`Annual Interest Rate: ${loanData?.interest_rate_apr || 12}% p.a. (${((loanData?.interest_rate_apr || 12)/12).toFixed(2)}% per month)`, 311, curY + 34)
-          .text(`Monthly Interest Due: ${formatINR(((loanData?.principal_amount || 0) * (loanData?.interest_rate_apr || 12)) / 1200)}`, 311, curY + 46)
+          .text(`Annual Interest Rate: ${loanData?.interest_rate_apr || 18}% p.a. (${((loanData?.interest_rate_apr || 18)/12).toFixed(2)}% per month)`, 311, curY + 34)
+          .text(`Monthly Interest Due: ${formatINR(((loanData?.principal_amount || 0) * (loanData?.interest_rate_apr || 18)) / 1200)}`, 311, curY + 46)
           .text(`Pledge Date: ${loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr}`, 311, curY + 58)
           .text(`Maturity Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : '12 Months'}`, 311, curY + 70)
           .text(`Tenure: ${loanData?.tenure_months || 12} Months  |  LTV Cap: 100%  |  Vault Ref: ${goldItems[0]?.storage_bin_id || 'VAULT-TRAY-A1'}`, 311, curY + 82);
