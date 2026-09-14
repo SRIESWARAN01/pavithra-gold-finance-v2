@@ -1,0 +1,54 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // Helper: Check if the requesting user is authenticated
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    // Helper: Check if the requesting user has an Admin/Owner role
+    function isAdmin() {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/profiles/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.role != 'Customer';
+    }
+
+    // Customer profile photos — owner can read/write own folder, admins full access
+    match /customers/photos/{customerId}/{allPaths=**} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+    }
+
+    // Customer signatures — owner can read/write own folder, admins full access
+    match /customers/signatures/{customerId}/{allPaths=**} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+    }
+
+    // Customer KYC documents — owner can read/write own folder, admins full access
+    match /customers/kyc/{customerId}/{allPaths=**} {
+      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+    }
+
+    // Gold collateral photos — admins can write, authenticated users can read
+    match /collaterals/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Generated documents (PDFs) — admins can write, authenticated can read
+    match /documents/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // Company branding assets (logo, seal) — admins can write, anyone can read
+    match /company/{allPaths=**} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+  }
+}

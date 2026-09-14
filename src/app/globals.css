@@ -1,0 +1,538 @@
+@import "tailwindcss";
+
+:root {
+  --background: #F8FAFC;
+  --foreground: #111827;
+  --card: #ffffff;
+  --card-foreground: #111827;
+  --popover: #ffffff;
+  --popover-foreground: #111827;
+  --primary: #2563EB;
+  --primary-foreground: #ffffff;
+  --secondary: #F8FAFC;
+  --secondary-foreground: #111827;
+  --muted: #F3F4F6;
+  --muted-foreground: #6B7280;
+  --accent: #38BDF8;
+  --accent-foreground: #111827;
+  --destructive: #EF4444;
+  --destructive-foreground: #ffffff;
+  --border: #D1D5DB;
+  --input: #D1D5DB;
+  --ring: #2563EB;
+  --radius: 0.5rem;
+  /* Risk score colors */
+  --risk-low: #22c55e;
+  --risk-medium: #f59e0b;
+  --risk-high: #ef4444;
+  --risk-critical: #dc2626;
+  /* Status colors */
+  --status-active: #22c55e;
+  --status-due: #f59e0b;
+  --status-overdue: #ef4444;
+  --status-settled: #3b82f6;
+  --status-draft: #64748b;
+}
+
+/* stylelint-disable-next-line at-rule-no-unknown */
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+}
+
+html {
+  overflow-x: hidden;
+}
+
+body {
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Scrollbar styling */
+.scrollbar-thin::-webkit-scrollbar {
+  width: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb:hover {
+  background: #2563EB;
+}
+
+/* Luxury Intro Splash Keyframes & Animations */
+@keyframes logo-zoom-in {
+  0% {
+    transform: scale(0.75);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+@keyframes gold-pulse-glow {
+  0%, 100% {
+    opacity: 0.25;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes tracking-in-expand {
+  0% {
+    letter-spacing: -0.2em;
+    opacity: 0;
+  }
+  40% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 1;
+    letter-spacing: 0.2em;
+  }
+}
+
+@keyframes progress-fill {
+  0% {
+    width: 0%;
+  }
+  100% {
+    width: 100%;
+  }
+}
+
+@keyframes splash-fade-out {
+  0% {
+    opacity: 1;
+    visibility: visible;
+  }
+  99% {
+    opacity: 0;
+    visibility: visible;
+  }
+  100% {
+    opacity: 0;
+    visibility: hidden;
+  }
+}
+
+/* Chart & Analytics Animations */
+@keyframes chart-bar-rise {
+  0% {
+    height: 0;
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+@keyframes card-entrance {
+  0% {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes count-pulse {
+  0%, 100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.02);
+  }
+}
+
+@keyframes live-dot {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes risk-glow-low {
+  0%, 100% { box-shadow: 0 0 8px rgba(34, 197, 94, 0.15); }
+  50% { box-shadow: 0 0 16px rgba(34, 197, 94, 0.3); }
+}
+
+@keyframes risk-glow-high {
+  0%, 100% { box-shadow: 0 0 8px rgba(239, 68, 68, 0.15); }
+  50% { box-shadow: 0 0 16px rgba(239, 68, 68, 0.3); }
+}
+
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+@keyframes slide-up {
+  0% {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
+.animate-logo-zoom {
+  animation: logo-zoom-in 1.2s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-gold-pulse {
+  animation: gold-pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-tracking-expand {
+  animation: tracking-in-expand 1.8s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-progress-fill {
+  animation: progress-fill 2.0s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.animate-splash-exit {
+  animation: splash-fade-out 0.6s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-chart-bar {
+  animation: chart-bar-rise 0.8s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-card-entrance {
+  animation: card-entrance 0.4s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-count-pulse {
+  animation: count-pulse 2s ease-in-out infinite;
+}
+
+.animate-live-dot {
+  animation: live-dot 1.5s ease-in-out infinite;
+}
+
+.animate-risk-low {
+  animation: risk-glow-low 2s ease-in-out infinite;
+}
+
+.animate-risk-high {
+  animation: risk-glow-high 1.5s ease-in-out infinite;
+}
+
+.animate-shimmer {
+  background: linear-gradient(90deg, transparent, rgba(37, 99, 235, 0.06), transparent);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
+}
+
+.animate-slide-up {
+  animation: slide-up 0.5s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.3s ease forwards;
+}
+
+/* Staggered card entrance delays */
+.stagger-1 { animation-delay: 0.05s; opacity: 0; }
+.stagger-2 { animation-delay: 0.1s; opacity: 0; }
+.stagger-3 { animation-delay: 0.15s; opacity: 0; }
+.stagger-4 { animation-delay: 0.2s; opacity: 0; }
+.stagger-5 { animation-delay: 0.25s; opacity: 0; }
+.stagger-6 { animation-delay: 0.3s; opacity: 0; }
+.stagger-7 { animation-delay: 0.35s; opacity: 0; }
+.stagger-8 { animation-delay: 0.4s; opacity: 0; }
+
+/* Chart bar delays */
+.bar-delay-1 { animation-delay: 0.1s; }
+.bar-delay-2 { animation-delay: 0.15s; }
+.bar-delay-3 { animation-delay: 0.2s; }
+.bar-delay-4 { animation-delay: 0.25s; }
+.bar-delay-5 { animation-delay: 0.3s; }
+.bar-delay-6 { animation-delay: 0.35s; }
+.bar-delay-7 { animation-delay: 0.4s; }
+.bar-delay-8 { animation-delay: 0.45s; }
+.bar-delay-9 { animation-delay: 0.5s; }
+.bar-delay-10 { animation-delay: 0.55s; }
+.bar-delay-11 { animation-delay: 0.6s; }
+.bar-delay-12 { animation-delay: 0.65s; }
+
+/* Premium Glassmorphism Panel */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(209, 213, 219, 0.6);
+}
+
+/* Primary Accent Glow */
+@keyframes primary-accent-glow {
+  0%, 100% { box-shadow: 0 0 15px rgba(37, 99, 235, 0.06); }
+  50% { box-shadow: 0 0 25px rgba(37, 99, 235, 0.12); }
+}
+
+.animate-gold-glow {
+  animation: primary-accent-glow 3s ease-in-out infinite;
+}
+
+/* Smooth content transitions */
+@keyframes content-reveal {
+  0% { opacity: 0; transform: translateY(8px) scale(0.99); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.animate-content-reveal {
+  animation: content-reveal 0.4s cubic-bezier(0.25, 1, 0.5, 1) forwards;
+}
+
+/* ─── Responsive Sidebar Overlay ──────────────────────────────────── */
+.sidebar-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 40;
+  transition: opacity 0.3s ease;
+}
+
+.sidebar-slide {
+  transition: transform 0.3s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.sidebar-slide-enter {
+  transform: translateX(0);
+}
+
+.sidebar-slide-exit {
+  transform: translateX(-100%);
+}
+
+/* ─── Accessibility: Reduced Motion ───────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ─── iOS Safe Area Support ───────────────────────────────────────── */
+.safe-bottom {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* ─── Success Checkmark Animation ─────────────────────────────────── */
+@keyframes scale-up {
+  0% {
+    opacity: 0;
+    transform: scale(0.75) translateY(12px);
+  }
+  60% {
+    transform: scale(1.03) translateY(-2px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+.animate-scale-up {
+  animation: scale-up 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+/* Checkmark SVG wrapper */
+.success-checkmark-wrapper {
+  position: relative;
+  width: 96px;
+  height: 96px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Pulsing outer glow ring */
+.success-glow-ring {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(16, 185, 129, 0.25) 0%, transparent 70%);
+  animation: success-glow-pulse 2s ease-in-out infinite;
+}
+
+@keyframes success-glow-pulse {
+  0%, 100% {
+    transform: scale(1);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.15);
+    opacity: 1;
+  }
+}
+
+/* Filled green circle that pops in behind the check */
+.success-fill-circle {
+  position: absolute;
+  width: 88px;
+  height: 88px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #10B981, #059669);
+  box-shadow: 0 8px 32px rgba(16, 185, 129, 0.35), 0 0 0 4px rgba(16, 185, 129, 0.1);
+  animation: success-fill-pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) 0.2s both;
+  z-index: 0;
+}
+
+@keyframes success-fill-pop {
+  0% {
+    transform: scale(0);
+    opacity: 0;
+  }
+  70% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+/* SVG sits above the fill */
+.success-checkmark-svg {
+  position: relative;
+  z-index: 1;
+  width: 88px;
+  height: 88px;
+}
+
+/* Circle border draws in */
+.success-circle {
+  stroke-dasharray: 280;
+  stroke-dashoffset: 280;
+  animation: success-circle-draw 0.7s cubic-bezier(0.65, 0, 0.35, 1) 0.3s forwards;
+}
+
+@keyframes success-circle-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* Checkmark path draws in after circle */
+.success-check {
+  stroke-dasharray: 80;
+  stroke-dashoffset: 80;
+  animation: success-check-draw 0.45s cubic-bezier(0.65, 0, 0.35, 1) 0.75s forwards;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.15));
+}
+
+@keyframes success-check-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ─── Responsive Table Wrapper ────────────────────────────────────── */
+.responsive-table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.responsive-table-wrap::-webkit-scrollbar {
+  height: 4px;
+}
+
+.responsive-table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.responsive-table-wrap::-webkit-scrollbar-thumb {
+  background: #CBD5E1;
+  border-radius: 4px;
+}
+
+/* ─── Button Ripple Effect ─────────────────────────────────────────── */
+.btn-ripple {
+  position: relative;
+  overflow: hidden;
+}
+.btn-ripple::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle, rgba(255,255,255,0.3) 10%, transparent 70%);
+  transform: scale(0);
+  opacity: 0;
+  transition: transform 0.5s ease, opacity 0.3s ease;
+}
+.btn-ripple:active::after {
+  transform: scale(2.5);
+  opacity: 1;
+  transition: transform 0s, opacity 0s;
+}
+
+/* ─── Card Hover Effect ────────────────────────────────────────────── */
+.card-hover {
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.card-hover:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(0, 0, 0, 0.08);
+}
+
+/* ─── Sticky Table Header ──────────────────────────────────────────── */
+.sticky-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  background: #F9FAFB;
+  border-bottom: 2px solid #E5E7EB;
+}
+
+/* Table Row Hover fix */
+.responsive-table-wrap table tbody tr {
+ transition: background 0.15s ease;
+}
+.responsive-table-wrap table tbody tr:hover td {
+ background: #EFF6FF;
+}

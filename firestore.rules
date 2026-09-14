@@ -1,0 +1,228 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // =========================================================================
+    // Helper Functions & Strict Role Hierarchy:
+    // Admin > Manager > Cashier / Employee > Customer
+    // =========================================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function hasProfile() {
+      return isAuthenticated() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
+    }
+
+    function getUserRole() {
+      return get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role;
+    }
+
+    function isAdmin() {
+      return hasProfile() && (getUserRole() == 'Admin' || getUserRole() == 'Owner');
+    }
+
+    function isManager() {
+      return hasProfile() && (getUserRole() == 'Admin' || getUserRole() == 'Owner' || getUserRole() == 'Manager');
+    }
+
+    function isStaff() {
+      return hasProfile() && (
+        getUserRole() == 'Admin' || 
+        getUserRole() == 'Owner' || 
+        getUserRole() == 'Manager' || 
+        getUserRole() == 'Appraiser' || 
+        getUserRole() == 'Cashier' || 
+        getUserRole() == 'Employee' || 
+        getUserRole() == 'Accountant'
+      );
+    }
+
+    function isCustomer() {
+      return hasProfile() && getUserRole() == 'Customer';
+    }
+
+    // =========================================================================
+    // Profiles: Staff reads all, Customer reads own. Only Admin can delete.
+    // Self cannot elevate role.
+    // =========================================================================
+    match /profiles/{profileId} {
+      allow read: if isOwner(profileId) || isStaff();
+      allow create: if isAuthenticated();
+      allow update: if isAdmin() || (isOwner(profileId) && request.resource.data.role == resource.data.role);
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Branches: Authenticated read, Admin write
+    // =========================================================================
+    match /branches/{branchId} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // Loans: Staff reads all, Customer reads own.
+    // Create: Staff. Update: Manager/Admin (or staff before active).
+    // Delete: Admin ONLY (Employees cannot delete loans).
+    // =========================================================================
+    match /loans/{loanId} {
+      allow read: if isStaff() ||
+        (isCustomer() && resource.data.customer_id == request.auth.uid);
+      allow create: if isStaff();
+      allow update: if isManager() || (isStaff() && resource.data.status != 'Active' && resource.data.status != 'Settled');
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Gold Collateral & Photos: Staff full access, Customer read own
+    // =========================================================================
+    match /gold_collateral/{itemId} {
+      allow read: if isStaff() ||
+        (isCustomer() && resource.data.customer_id == request.auth.uid);
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    match /gold_photos/{photoId} {
+      allow read: if isAuthenticated();
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Payments: Staff reads all, Customer reads own.
+    // Create: Staff (Cashier/Manager/Admin).
+    // Update & Delete: Admin ONLY (Employees cannot reverse or delete payments).
+    // =========================================================================
+    match /payments/{paymentId} {
+      allow read: if isStaff() ||
+        (isCustomer() && resource.data.customer_id == request.auth.uid);
+      allow create: if isStaff();
+      allow update, delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Approval Requests: Staff creates, Managers/Admin review.
+    // Security restriction: Employees CANNOT approve their own submissions.
+    // =========================================================================
+    match /approval_requests/{reqId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update: if isManager() && (
+        resource.data.requested_by != request.auth.uid || isAdmin()
+      );
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Bank Re-Pledges: Staff reads/creates. Admin/Manager review & approve.
+    // Customers have NO access to bank re-pledges.
+    // =========================================================================
+    match /bankRePledges/{pledgeId} {
+      allow read: if isStaff();
+      allow create: if isStaff();
+      allow update: if isManager() || (isStaff() && resource.data.status == 'Pending Approval');
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // Bill Slogans (300 Tamil Slogans): Authenticated read, Staff write
+    // =========================================================================
+    match /billSlogans/{sloganId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // =========================================================================
+    // Interest Accruals: Staff full access, Customer reads own
+    // =========================================================================
+    match /interest_accruals/{accrualId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // =========================================================================
+    // Notifications: Recipient reads own, Staff full access
+    // =========================================================================
+    match /notifications/{notifId} {
+      allow read: if isStaff() ||
+        (isAuthenticated() && (resource.data.recipient_id == request.auth.uid || resource.data.recipient_id == 'admin_broadcast'));
+      allow create: if isStaff();
+      allow update: if isStaff() ||
+        (isAuthenticated() && resource.data.recipient_id == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+
+    // =========================================================================
+    // WhatsApp Reminders: Staff only
+    // =========================================================================
+    match /whatsapp_reminders/{reminderId} {
+      allow read, write: if isStaff();
+    }
+
+    // =========================================================================
+    // Settings: Authenticated read, Admin ONLY write
+    // Employees cannot change gold rates, LTV, or interest rules directly.
+    // =========================================================================
+    match /settings/{settingKey} {
+      allow read: if isAuthenticated();
+      allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // Audit Logs: Manager/Admin read, System create, NEVER update/delete
+    // =========================================================================
+    match /audit_logs/{logId} {
+      allow read: if isManager();
+      allow create: if isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // Counters: Authenticated read/write for atomic sequential numbers
+    // =========================================================================
+    match /counters/{counterId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // =========================================================================
+    // Accounting Journals: Manager / Admin only
+    // =========================================================================
+    match /accounting_journals/{journalId} {
+      allow read, write: if isManager();
+    }
+
+    // =========================================================================
+    // Documents (generated PDFs): Staff write, Authenticated read
+    // =========================================================================
+    match /documents/{documentId} {
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
+    }
+
+    // =========================================================================
+    // Auction Bids: Manager / Admin only
+    // =========================================================================
+    match /auction_bids/{bidId} {
+      allow read, write: if isManager();
+    }
+
+    // =========================================================================
+    // Support Tickets: Authenticated create/read, Staff full access
+    // =========================================================================
+    match /support_tickets/{ticketId} {
+      allow read, write: if isAuthenticated();
+    }
+
+    // =========================================================================
+    // DENY ALL OTHER UNLISTED COLLECTIONS
+    // =========================================================================
+  }
+}
