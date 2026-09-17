@@ -5,10 +5,22 @@
 
 import { NextResponse } from 'next/server';
 import { createProfile, checkDuplicateCustomer } from '@/lib/db/profiles';
+import { adminAuth } from '@/lib/firebase-admin';
 import type { Gender, MaritalStatus, KycStatus, UserRole } from '@/types/database';
 
 export async function POST(request: Request) {
   try {
+    const authorization = request.headers.get('authorization');
+    const idToken = authorization?.startsWith('Bearer ') ? authorization.slice(7) : null;
+    if (!idToken) {
+      return NextResponse.json({ error: 'Administrator authentication is required.' }, { status: 401 });
+    }
+
+    const caller = await adminAuth.verifyIdToken(idToken);
+    if (caller.role !== 'Admin' && caller.role !== 'Owner') {
+      return NextResponse.json({ error: 'Only an Administrator or Owner can create customer accounts.' }, { status: 403 });
+    }
+
     const body = await request.json();
     const {
       name,
@@ -39,12 +51,11 @@ export async function POST(request: Request) {
       branchId,
       branchCode,
       tags,
-      role = 'Customer',
     } = body;
 
-    const userRole: UserRole = (['Admin', 'Customer', 'Owner', 'Manager', 'Appraiser', 'Cashier', 'Accountant', 'Collection_Officer', 'Customer_Support'].includes(role)
-      ? role
-      : 'Customer') as UserRole;
+    // This public-facing onboarding endpoint may create customers only. Staff
+    // roles must be provisioned by a separate, privileged administration flow.
+    const userRole: UserRole = 'Customer';
 
     if (!name || !phone || !password) {
       return NextResponse.json(
@@ -68,48 +79,17 @@ export async function POST(request: Request) {
       );
     }
 
-    // 3. Create user via Firebase Admin SDK or Firebase Auth REST API
-    let tempUid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+    // 3. Create the Firebase Authentication account with the Admin SDK.
     const cleanedPhone = phone.trim().replace('+91', '');
     const authEmail = email || `${cleanedPhone}@pgf.local`;
-
-    try {
-      const { adminAuth } = await import('@/lib/firebase-admin');
-      const userRecord = await adminAuth.createUser({
-        email: authEmail,
-        password: password,
-        displayName: name,
-        phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
-      });
-      tempUid = userRecord.uid;
-      // Set role custom claim
-      await adminAuth.setCustomUserClaims(tempUid, { role: userRole });
-    } catch (adminErr) {
-      console.warn('Firebase Admin SDK user creation skipped/failed, attempting REST API fallback:', adminErr);
-
-      const apiKey = process.env.NEXT_PUBLIC_FIREBASE_API_KEY || '';
-      const isFirebaseConfigured = apiKey !== '' && !apiKey.includes('your-firebase-api-key');
-
-      if (isFirebaseConfigured) {
-        const signupUrl = `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`;
-        const signupRes = await fetch(signupUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: authEmail,
-            password: password,
-            returnSecureToken: false
-          })
-        });
-
-        if (signupRes.ok) {
-          const signupData = await signupRes.json();
-          if (signupData.localId) {
-            tempUid = signupData.localId;
-          }
-        }
-      }
-    }
+    const userRecord = await adminAuth.createUser({
+      email: authEmail,
+      password,
+      displayName: name,
+      phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
+    });
+    const tempUid = userRecord.uid;
+    await adminAuth.setCustomUserClaims(tempUid, { role: userRole });
 
     // 4. Create customer profile in Firestore with dual Customer ID format
     const profile = await createProfile({
@@ -152,4 +132,3 @@ export async function POST(request: Request) {
     );
   }
 }
-

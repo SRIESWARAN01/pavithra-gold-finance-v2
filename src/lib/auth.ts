@@ -3,7 +3,7 @@
 // Backed by Firebase Authentication and Cloud Firestore.
 
 import { auth, db } from '@/lib/firebase';
-import { doc, getDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { doc, getDoc } from 'firebase/firestore';
 import type { Profile, UserRole } from '@/types/database';
 
 /**
@@ -15,15 +15,14 @@ export function isFirebaseConfigured(): boolean {
 }
 
 /**
- * Get active session object from auth state or client local storage.
+ * Read non-authoritative UI session details. Authentication and access checks
+ * must use Firebase Authentication, never browser storage.
  */
 export function getLocalSession(): any | null {
   if (typeof window === 'undefined') return null;
   try {
     const rawActive = localStorage.getItem('pgf_active_session');
     if (rawActive) return JSON.parse(rawActive);
-    const rawBypass = localStorage.getItem('pgf_bypass_session');
-    if (rawBypass) return JSON.parse(rawBypass);
   } catch (e) {
     console.warn('Failed to parse local session:', e);
   }
@@ -31,22 +30,13 @@ export function getLocalSession(): any | null {
 }
 
 /**
- * Get the currently authenticated user.
+ * Get the currently authenticated Firebase user.
  * Returns null if not authenticated.
  */
 export async function getCurrentSession() {
   const user = auth.currentUser;
   if (user) return { user };
 
-  const local = getLocalSession();
-  if (local) {
-    return {
-      user: {
-        uid: local.uid || local.id,
-        email: local.email || `${local.phone || local.phone_primary}@pgf.local`
-      }
-    };
-  }
   return null;
 }
 
@@ -55,8 +45,6 @@ export async function getCurrentSession() {
  */
 export async function getCurrentUserId(): Promise<string | null> {
   if (auth.currentUser) return auth.currentUser.uid;
-  const local = getLocalSession();
-  if (local) return local.uid || local.id || null;
   return null;
 }
 
@@ -66,8 +54,6 @@ export async function getCurrentUserId(): Promise<string | null> {
  */
 export async function getCurrentProfile(): Promise<Profile | null> {
   const userId = await getCurrentUserId();
-  const local = getLocalSession();
-
   if (userId) {
     try {
       // 1. Try fetching directly by doc ID
@@ -77,36 +63,10 @@ export async function getCurrentProfile(): Promise<Profile | null> {
         return { id: profileSnap.id, ...profileSnap.data() } as Profile;
       }
 
-      // 2. If not found by doc ID, try looking up by phone_primary
-      if (local?.phone || local?.phone_primary) {
-        const phone = local.phone || local.phone_primary;
-        const q = query(collection(db, 'profiles'), where('phone_primary', '==', phone));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const docMatch = snap.docs[0];
-          return { id: docMatch.id, ...docMatch.data() } as Profile;
-        }
-      }
     } catch (err) {
       console.warn('Firestore profile lookup error:', err);
     }
   }
-
-  // 3. Fallback: construct profile from localStorage session
-  if (local) {
-    const role = (local.role || (local.phone === '7094826586' ? 'Admin' : 'Customer')) as UserRole;
-    return {
-      id: userId || local.id || (role === 'Admin' ? 'admin_7094826586' : `cust_${local.phone || '7094826586'}`),
-      name: local.name || (role === 'Admin' ? 'Administrator' : 'Customer Account'),
-      phone_primary: local.phone || local.phone_primary || '7094826586',
-      customer_number: local.customer_number || (role === 'Customer' ? `PGF-CUST-${(local.phone || '7094826586').substring(4)}` : null),
-      role: role,
-      status: 'Active',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    } as Profile;
-  }
-
   return null;
 }
 

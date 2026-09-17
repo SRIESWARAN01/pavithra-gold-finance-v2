@@ -54,7 +54,12 @@ service cloud.firestore {
     // =========================================================================
     match /profiles/{profileId} {
       allow read: if isOwner(profileId) || isStaff();
-      allow create: if isAuthenticated();
+      // Customers may initialise only their own Customer profile. Privileged
+      // profiles are provisioned by an administrator (or the Admin SDK).
+      allow create: if isAdmin() || (
+        isAuthenticated() && request.auth.uid == profileId &&
+        request.resource.data.role == 'Customer'
+      );
       allow update: if isAdmin() || (isOwner(profileId) && request.resource.data.role == resource.data.role);
       allow delete: if isAdmin();
     }
@@ -144,7 +149,8 @@ service cloud.firestore {
     // Interest Accruals: Staff full access, Customer reads own
     // =========================================================================
     match /interest_accruals/{accrualId} {
-      allow read: if isAuthenticated();
+      allow read: if isStaff() ||
+        (isCustomer() && resource.data.customer_id == request.auth.uid);
       allow write: if isStaff();
     }
 
@@ -181,7 +187,7 @@ service cloud.firestore {
     // =========================================================================
     match /audit_logs/{logId} {
       allow read: if isManager();
-      allow create: if isAuthenticated();
+      allow create: if isStaff();
       allow update, delete: if false;
     }
 
@@ -189,7 +195,8 @@ service cloud.firestore {
     // Counters: Authenticated read/write for atomic sequential numbers
     // =========================================================================
     match /counters/{counterId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
     }
 
     // =========================================================================

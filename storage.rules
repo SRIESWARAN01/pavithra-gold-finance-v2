@@ -8,44 +8,66 @@ service firebase.storage {
       return request.auth != null;
     }
 
-    // Helper: Check if the requesting user has an Admin/Owner role
-    function isAdmin() {
+    // Helper: Check if user profile exists in Firestore
+    function hasProfile() {
       return isAuthenticated() &&
-        firestore.exists(/databases/(default)/documents/profiles/$(request.auth.uid)) &&
-        firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.role != 'Customer';
+        firestore.exists(/databases/(default)/documents/profiles/$(request.auth.uid));
     }
 
-    // Customer profile photos — owner can read/write own folder, admins full access
+    // Helper: Get user's role from profile
+    function getUserRole() {
+      return firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.role;
+    }
+
+    // Helper: Check if requesting user has an Admin/Owner role
+    function isAdmin() {
+      return hasProfile() && (getUserRole() == 'Admin' || getUserRole() == 'Owner');
+    }
+
+    // Helper: Check if requesting user is an authorized staff member
+    function isStaff() {
+      return hasProfile() && (
+        getUserRole() == 'Admin' || 
+        getUserRole() == 'Owner' || 
+        getUserRole() == 'Manager' || 
+        getUserRole() == 'Appraiser' || 
+        getUserRole() == 'Cashier' || 
+        getUserRole() == 'Employee' || 
+        getUserRole() == 'Accountant'
+      );
+    }
+
+    // Customer profile photos — staff full access, customer read/write own
     match /customers/photos/{customerId}/{allPaths=**} {
-      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
-    // Customer signatures — owner can read/write own folder, admins full access
+    // Customer signatures — staff full access, customer read/write own
     match /customers/signatures/{customerId}/{allPaths=**} {
-      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
-    // Customer KYC documents — owner can read/write own folder, admins full access
+    // Customer KYC documents — staff full access, customer read/write own
     match /customers/kyc/{customerId}/{allPaths=**} {
-      allow read: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isAdmin() || (isAuthenticated() && request.auth.uid == customerId);
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
-    // Gold collateral photos — admins can write, authenticated users can read
+    // Gold collateral photos — staff can write, authenticated users can read
     match /collaterals/{allPaths=**} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if isStaff();
     }
 
-    // Generated documents (PDFs) — admins can write, authenticated can read
+    // Generated documents (PDFs) — staff can write, authenticated can read
     match /documents/{allPaths=**} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if isStaff();
     }
 
-    // Company branding assets (logo, seal) — admins can write, anyone can read
+    // Company branding assets (logo, seal) — admins can write, anyone authenticated can read
     match /company/{allPaths=**} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();

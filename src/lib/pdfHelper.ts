@@ -2,8 +2,7 @@
 // Universal PDF & Billing Document dispatcher for PGF.
 // Handles preview, direct download (blob), native printing, and document URL generation with live data support.
 
-import { db } from '@/lib/firebase';
-import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { auth } from '@/lib/firebase';
 
 export interface PdfParams {
   type: 
@@ -21,6 +20,10 @@ export interface PdfParams {
     | 'penalty_receipt'
     | 'closure'
     | 'loan_closure'
+    | 'release'
+    | 'release_certificate'
+    | 'release_receipt'
+    | 'gold_release'
     | 'statement'
     | 'loan_statement'
     | 'customer_statement'
@@ -43,13 +46,14 @@ export interface PdfParams {
   amount?: number | null;
   download?: boolean;
   filename?: string | null;
+  token?: string | null;
   payload?: any;
 }
 
 /**
  * Construct sanitized API URL for PDF generation
  */
-export function getPdfApiUrl(params: PdfParams): string {
+export function getPdfApiUrl(params: PdfParams, token?: string | null): string {
   const queryParams = new URLSearchParams();
   queryParams.set('type', params.type);
   if (params.loanId) queryParams.set('loanId', params.loanId);
@@ -62,97 +66,69 @@ export function getPdfApiUrl(params: PdfParams): string {
   if (params.download) queryParams.set('download', 'true');
   if (params.filename) queryParams.set('filename', params.filename);
 
+  const effectiveToken = token || params.token;
+  if (effectiveToken) {
+    queryParams.set('token', effectiveToken);
+  }
+
   return `/api/pdf?${queryParams.toString()}`;
 }
 
 /**
- * Fetch rich live context on client if not provided in payload
+ * Asynchronously generate an authorized PDF URL with the active user's Firebase ID token
  */
-async function resolveLivePayload(params: PdfParams): Promise<any> {
-  if (params.payload) return params.payload;
-
-  const payload: any = { type: params.type };
-
+export async function getAuthorizedPdfUrl(params: PdfParams): Promise<string> {
+  let token: string | null = null;
   try {
-    // 1. Fetch Loan if loanId or paymentId provided
-    if (params.loanId) {
-      const loanSnap = await getDoc(doc(db, 'loans', params.loanId));
-      if (loanSnap.exists()) {
-        payload.loanData = { id: loanSnap.id, ...loanSnap.data() };
-        
-        // Fetch Customer for this loan
-        if (payload.loanData.customer_id) {
-          const custSnap = await getDoc(doc(db, 'profiles', payload.loanData.customer_id));
-          if (custSnap.exists()) {
-            payload.customerData = { id: custSnap.id, ...custSnap.data() };
-          }
-        }
-
-        // Fetch Gold items
-        const goldSnap = await getDocs(query(collection(db, 'gold_collateral'), where('loan_id', '==', params.loanId)));
-        payload.goldItems = goldSnap.docs.map(g => ({ id: g.id, ...g.data() }));
-
-        // Fetch payments for this loan
-        const pmtSnap = await getDocs(query(collection(db, 'payments'), where('loan_id', '==', params.loanId)));
-        payload.paymentsHistory = pmtSnap.docs.map(p => ({ id: p.id, ...p.data() }));
-      }
-    }
-
-    // 2. Fetch Customer directly if customerId provided
-    if (params.customerId && !payload.customerData) {
-      const custSnap = await getDoc(doc(db, 'profiles', params.customerId));
-      if (custSnap.exists()) {
-        payload.customerData = { id: custSnap.id, ...custSnap.data() };
-      }
-    }
-
-    // 3. Fetch Customer All Loans if customer statement
-    if (payload.customerData?.id && (params.type === 'customer_statement' || params.type === 'statement')) {
-      const loansSnap = await getDocs(query(collection(db, 'loans'), where('customer_id', '==', payload.customerData.id)));
-      payload.customerLoansList = loansSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-
-      const allPmtsSnap = await getDocs(query(collection(db, 'payments'), where('customer_id', '==', payload.customerData.id)));
-      payload.paymentsHistory = allPmtsSnap.docs.map(p => ({ id: p.id, ...p.data() }));
-    }
-
-    // 4. Fetch Payment if paymentId provided
-    if (params.paymentId) {
-      const paySnap = await getDoc(doc(db, 'payments', params.paymentId));
-      if (paySnap.exists()) {
-        payload.paymentData = { id: paySnap.id, ...paySnap.data() };
-        if (payload.paymentData.loan_id && !payload.loanData) {
-          const lSnap = await getDoc(doc(db, 'loans', payload.paymentData.loan_id));
-          if (lSnap.exists()) payload.loanData = { id: lSnap.id, ...lSnap.data() };
-        }
-        if (payload.paymentData.customer_id && !payload.customerData) {
-          const cSnap = await getDoc(doc(db, 'profiles', payload.paymentData.customer_id));
-          if (cSnap.exists()) payload.customerData = { id: cSnap.id, ...cSnap.data() };
-        }
-      }
+    if (auth.currentUser) {
+      token = await auth.currentUser.getIdToken();
     }
   } catch (err) {
-    console.warn('Could not fully resolve client live payload for PDF:', err);
+    console.warn('Could not acquire ID token for PDF URL:', err);
   }
-
-  return payload;
+  return getPdfApiUrl(params, token);
 }
 
 /**
- * Trigger direct file download in browser across all devices
+ * Trigger direct file download in browser across all devices with authenticated fetch
  */
 export async function downloadPdfDocument(params: PdfParams, defaultFilename?: string): Promise<void> {
   try {
-    const payload = await resolveLivePayload(params);
-    
+    let token: string | null = null;
+    try {
+      if (auth.currentUser) {
+        token = await auth.currentUser.getIdToken();
+      }
+    } catch {}
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const bodyPayload = {
+      type: params.type,
+      loanId: params.loanId,
+      paymentId: params.paymentId,
+      customerId: params.customerId,
+      branchId: params.branchId,
+      report: params.report,
+      month: params.month,
+      customAmount: params.amount,
+      download: true,
+      token,
+      ...(params.payload || {})
+    };
+
     const res = await fetch('/api/pdf', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, download: true, customAmount: params.amount })
+      headers,
+      body: JSON.stringify(bodyPayload)
     });
 
     if (!res.ok) {
-      // Fallback to GET
-      const fallbackUrl = getPdfApiUrl({ ...params, download: true });
+      // Fallback to GET with token
+      const fallbackUrl = getPdfApiUrl({ ...params, download: true }, token);
       window.open(fallbackUrl, '_blank');
       return;
     }
@@ -179,25 +155,52 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
     }, 200);
   } catch (err: any) {
     console.error('Error downloading PDF via POST, trying GET fallback:', err);
-    window.open(getPdfApiUrl({ ...params, download: true }), '_blank');
+    let token: string | null = null;
+    try {
+      if (auth.currentUser) token = await auth.currentUser.getIdToken();
+    } catch {}
+    window.open(getPdfApiUrl({ ...params, download: true }, token), '_blank');
   }
 }
 
 /**
- * Trigger browser print dialog for document
+ * Trigger browser print dialog for document with authenticated fetch
  */
 export async function printPdfDocument(params: PdfParams): Promise<void> {
   try {
-    const payload = await resolveLivePayload(params);
-    
+    let token: string | null = null;
+    try {
+      if (auth.currentUser) {
+        token = await auth.currentUser.getIdToken();
+      }
+    } catch {}
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const bodyPayload = {
+      type: params.type,
+      loanId: params.loanId,
+      paymentId: params.paymentId,
+      customerId: params.customerId,
+      branchId: params.branchId,
+      report: params.report,
+      month: params.month,
+      customAmount: params.amount,
+      token,
+      ...(params.payload || {})
+    };
+
     const res = await fetch('/api/pdf', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...payload, customAmount: params.amount })
+      headers,
+      body: JSON.stringify(bodyPayload)
     });
 
     if (!res.ok) {
-      window.open(getPdfApiUrl(params), '_blank');
+      window.open(getPdfApiUrl(params, token), '_blank');
       return;
     }
 
@@ -231,6 +234,10 @@ export async function printPdfDocument(params: PdfParams): Promise<void> {
     };
   } catch (err) {
     console.error('Error printing PDF:', err);
-    window.open(getPdfApiUrl(params), '_blank');
+    let token: string | null = null;
+    try {
+      if (auth.currentUser) token = await auth.currentUser.getIdToken();
+    } catch {}
+    window.open(getPdfApiUrl(params, token), '_blank');
   }
 }

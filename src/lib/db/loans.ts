@@ -553,3 +553,109 @@ export async function getLoanStats(branchId?: string): Promise<{
     return { active: 0, closed: 0, overdue: 0, dueToday: 0, dueThisWeek: 0, totalPrincipal: 0, totalOutstanding: 0 };
   }
 }
+
+/**
+ * Calculate the exact closure and release dues for a loan up to an actual release date.
+ * Deducts all previous interest and principal repayments.
+ */
+export async function calculateReleaseDues(
+  loanId: string,
+  releaseDate?: string
+): Promise<{
+  principalAmount: number;
+  totalPrincipalPaid: number;
+  remainingPrincipal: number;
+  interestRateApr: number;
+  originationDate: string;
+  releaseDate: string;
+  daysElapsed: number;
+  totalInterestAccrued: number;
+  totalInterestPaid: number;
+  unpaidInterest: number;
+  finalReleaseAmount: number;
+}> {
+  const loanRef = doc(db, COLLECTION, loanId);
+  const snap = await getDoc(loanRef);
+  if (!snap.exists()) {
+    throw new Error('Loan record not found.');
+  }
+
+  const loan = snap.data();
+  const targetDateStr = (releaseDate || new Date().toISOString()).split('T')[0];
+  const origDateStr = (loan.origination_date || loan.created_at || targetDateStr).split('T')[0];
+
+  const origTime = new Date(origDateStr).getTime();
+  const targetTime = new Date(targetDateStr).getTime();
+  const msDiff = Math.max(0, targetTime - origTime);
+  const daysElapsed = Math.max(1, Math.ceil(msDiff / (1000 * 60 * 60 * 24)));
+
+  const principal = loan.principal_amount || 0;
+  const principalPaid = loan.total_principal_paid || 0;
+  const remainingPrincipal = Math.max(0, principal - principalPaid);
+  const apr = loan.interest_rate_apr || 18;
+
+  // Simple daily accrual: Principal × (APR / 100) × (Days / 365)
+  const totalInterestAccrued = Math.round(((remainingPrincipal * (apr / 100) * daysElapsed) / 365) * 100) / 100;
+  const totalInterestPaid = loan.total_interest_paid || 0;
+  
+  // Unpaid interest is the difference between total accrued and already paid, or tracked outstanding_interest
+  const trackedOutstanding = loan.outstanding_interest || 0;
+  const unpaidInterest = Math.max(0, Math.max(trackedOutstanding, totalInterestAccrued - totalInterestPaid));
+
+  const finalReleaseAmount = Math.round((remainingPrincipal + unpaidInterest) * 100) / 100;
+
+  return {
+    principalAmount: principal,
+    totalPrincipalPaid: principalPaid,
+    remainingPrincipal,
+    interestRateApr: apr,
+    originationDate: origDateStr,
+    releaseDate: targetDateStr,
+    daysElapsed,
+    totalInterestAccrued,
+    totalInterestPaid,
+    unpaidInterest,
+    finalReleaseAmount,
+  };
+}
+
+/**
+ * Fetch a customer's permanent lifetime loan ledger across all accounts (including closed/released loans).
+ * Guarantees every past loan remains accessible with complete historical details.
+ */
+export async function getLifetimeLoansByCustomer(customerId: string): Promise<Loan[]> {
+  try {
+    const q = query(
+      collection(db, COLLECTION),
+      where('customer_id', '==', customerId)
+    );
+    const snapshot = await getDocs(q);
+
+    const lifetimeLoans: Loan[] = [];
+    for (const d of snapshot.docs) {
+      const data = d.data();
+      const loan: any = { id: d.id, ...data };
+      
+      // Permanently attach collateral and payment history
+      loan.gold_items = await fetchGoldForLoan(d.id);
+      loan.payments = await fetchPaymentsForLoan(d.id);
+
+      // Compute total release amount if closed
+      if (loan.status === 'Settled' || loan.closed_at) {
+        const settlementPayment = (loan.payments || []).find((p: any) => p.payment_type === 'Full_Settlement');
+        loan.release_amount = settlementPayment ? settlementPayment.amount_paid : (loan.principal_amount || 0);
+        loan.release_date = loan.closed_at || loan.release_date || (settlementPayment ? settlementPayment.payment_date : null);
+      }
+
+      lifetimeLoans.push(loan as Loan);
+    }
+
+    // Sort newest origination first
+    lifetimeLoans.sort((a, b) => (b.origination_date || b.created_at || '').localeCompare(a.origination_date || a.created_at || ''));
+    return lifetimeLoans;
+  } catch (err) {
+    console.error('Error fetching lifetime loans by customer:', err);
+    return [];
+  }
+}
+

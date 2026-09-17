@@ -2,10 +2,10 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Lock, Phone, Eye, EyeOff, ShieldAlert, ShieldCheck, UserCheck, Users, Sparkles, ArrowRight } from 'lucide-react';
+import { Lock, Eye, EyeOff, ShieldAlert, ShieldCheck, Users, ArrowRight } from 'lucide-react';
 import { auth, db } from '@/lib/firebase';
-import { signInWithEmailAndPassword, createUserWithEmailAndPassword } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs } from 'firebase/firestore';
+import { signInWithEmailAndPassword } from 'firebase/auth';
+import { doc, getDoc } from 'firebase/firestore';
 import type { UserRole } from '@/types/database';
 import Logo from '@/components/Logo';
 
@@ -13,8 +13,8 @@ export default function LoginPage() {
   const router = useRouter();
 
   const [activePortal, setActivePortal] = useState<'admin' | 'customer'>('admin');
-  const [phone, setPhone] = useState('7094826586');
-  const [password, setPassword] = useState('Eswa@2005');
+  const [phone, setPhone] = useState('');
+  const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -23,13 +23,8 @@ export default function LoginPage() {
   const handlePortalSwitch = (portal: 'admin' | 'customer') => {
     setActivePortal(portal);
     setError(null);
-    if (portal === 'admin') {
-      setPhone('7094826586');
-      setPassword('Eswa@2005');
-    } else {
-      setPhone('9876543210');
-      setPassword('Cust@123');
-    }
+    setPhone('');
+    setPassword('');
   };
 
   const handleLogin = async (e: React.FormEvent) => {
@@ -47,88 +42,36 @@ export default function LoginPage() {
 
     try {
       const email = `${cleanedPhone}@pgf.local`;
-      let userUid = '';
-      const isMasterAdmin = (cleanedPhone === '7094826586' && password === 'Eswa@2005') || activePortal === 'admin';
-      let profileRole: UserRole = isMasterAdmin ? 'Admin' : 'Customer';
-      let profileName = isMasterAdmin ? 'Administrator' : 'Customer Account';
-      let customerNumber: string | null = null;
+      // 1. Authentication accounts are created only by the authorised onboarding flow.
+      const userCredential = await signInWithEmailAndPassword(auth, email, password);
+      const userUid = userCredential.user.uid;
 
-      // 1. Try Firebase Authentication
-      let userCredential = null;
-      try {
-        userCredential = await signInWithEmailAndPassword(auth, email, password);
-      } catch (signInErr: any) {
-        // If user doesn't exist yet, attempt automatic creation
-        try {
-          userCredential = await createUserWithEmailAndPassword(auth, email, password);
-        } catch (createErr) {
-          console.warn('Firebase Auth user creation notice:', createErr);
-        }
+      // 2. The profile ID must be the authenticated Firebase UID. Never identify
+      // a user by a phone-number query, since that could bind the wrong profile.
+      const profileSnap = await getDoc(doc(db, 'profiles', userUid));
+      if (!profileSnap.exists()) {
+        throw new Error('This account has no active profile. Please contact your branch administrator.');
       }
 
-      if (userCredential?.user) {
-        userUid = userCredential.user.uid;
+      const profile = profileSnap.data();
+      if (profile.status && profile.status !== 'Active') {
+        throw new Error('This account is inactive. Please contact your branch administrator.');
       }
 
-      // 2. Resolve or sync profile in Firestore
-      try {
-        let matchedDoc: any = null;
+      const profileRole = (profile.role || 'Customer') as UserRole;
+      const profileName = profile.name || 'Account Holder';
+      const customerNumber = profile.customer_number || null;
+      const isCustomer = profileRole === 'Customer';
 
-        // Try direct lookup by uid
-        if (userUid) {
-          const pRef = doc(db, 'profiles', userUid);
-          const pSnap = await getDoc(pRef);
-          if (pSnap.exists()) {
-            matchedDoc = { id: pSnap.id, ...pSnap.data() };
-          }
-        }
-
-        // If not found by uid, query by phone_primary
-        if (!matchedDoc) {
-          const q = query(collection(db, 'profiles'), where('phone_primary', '==', cleanedPhone));
-          const snap = await getDocs(q);
-          if (!snap.empty) {
-            matchedDoc = { id: snap.docs[0].id, ...snap.docs[0].data() };
-          }
-        }
-
-        if (matchedDoc) {
-          userUid = matchedDoc.id;
-          profileRole = matchedDoc.role || profileRole;
-          profileName = matchedDoc.name || profileName;
-          customerNumber = matchedDoc.customer_number || null;
-        } else {
-          // Create initial profile in Firestore
-          const targetId = userUid || (isMasterAdmin ? 'admin_7094826586' : `user_${Date.now()}`);
-          userUid = targetId;
-          customerNumber = isMasterAdmin ? null : `PGF-CUST-${cleanedPhone.substring(6)}`;
-
-          const newProfile = {
-            id: targetId,
-            name: isMasterAdmin ? 'Administrator' : `Customer (${cleanedPhone.substring(6)})`,
-            phone_primary: cleanedPhone,
-            role: profileRole,
-            status: 'Active',
-            customer_number: customerNumber,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-          };
-
-          try {
-            await setDoc(doc(db, 'profiles', targetId), newProfile, { merge: true });
-          } catch (writeErr) {
-            console.warn('Firestore profile initial write notice:', writeErr);
-          }
-        }
-      } catch (dbErr) {
-        console.warn('Firestore lookup notice:', dbErr);
+      if ((activePortal === 'customer') !== isCustomer) {
+        throw new Error(isCustomer ? 'Please sign in through the Customer Portal.' : 'Please sign in through the Admin / Staff portal.');
       }
 
       // 3. Store active session in LocalStorage (for instant access across layouts)
       if (typeof window !== 'undefined') {
         const sessionPayload = {
-          id: userUid || (isMasterAdmin ? 'admin_7094826586' : `cust_${cleanedPhone}`),
-          uid: userUid || (isMasterAdmin ? 'admin_7094826586' : `cust_${cleanedPhone}`),
+          id: userUid,
+          uid: userUid,
           role: profileRole,
           phone: cleanedPhone,
           phone_primary: cleanedPhone,
@@ -136,7 +79,6 @@ export default function LoginPage() {
           customer_number: customerNumber,
         };
         localStorage.setItem('pgf_active_session', JSON.stringify(sessionPayload));
-        localStorage.setItem('pgf_bypass_session', JSON.stringify(sessionPayload));
       }
 
       // 4. Clean Redirection to appropriate portal
@@ -311,33 +253,6 @@ export default function LoginPage() {
               )}
             </button>
           </form>
-
-          {/* Prefill helpers */}
-          <div className="mt-4 pt-3 border-t border-gray-100 text-center space-y-1.5">
-            {activePortal === 'admin' ? (
-              <button
-                type="button"
-                onClick={() => {
-                  setPhone('7094826586');
-                  setPassword('Eswa@2005');
-                }}
-                className="text-[11px] text-[#2563EB] hover:underline font-semibold inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Sparkles size={12} /> Auto-fill Master Admin (7094826586)
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setPhone('9876543210');
-                  setPassword('Cust@123');
-                }}
-                className="text-[11px] text-[#2563EB] hover:underline font-semibold inline-flex items-center gap-1 cursor-pointer"
-              >
-                <Sparkles size={12} /> Auto-fill Demo Customer (9876543210)
-              </button>
-            )}
-          </div>
 
           <div className="mt-6 pt-4 border-t border-gray-100 text-center">
             <span className="text-[10px] text-gray-400">

@@ -1,10 +1,10 @@
 import { NextRequest } from 'next/server';
 import PDFDocument from 'pdfkit/js/pdfkit.standalone';
-import { db } from '@/lib/firebase';
-import { doc, getDoc, collection, getDocs, query, where } from 'firebase/firestore';
+import { adminAuth, adminDb, adminStorage } from '@/lib/firebase-admin';
 import path from 'path';
 import fs from 'fs';
 import { getNextBillSlogan } from '@/lib/db/slogans';
+import type { UserRole } from '@/types/database';
 
 /**
  * Convert number into Indian Currency Words (e.g. "RUPEES TWENTY-FIVE THOUSAND ONLY")
@@ -33,14 +33,205 @@ function formatINR(val: number): string {
   return '₹' + (val || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
+/**
+ * Authenticate incoming request via Firebase ID Token
+ */
+async function authenticatePdfRequest(
+  req: NextRequest,
+  body?: any
+): Promise<{ uid: string; role: UserRole }> {
+  // 1. Check Authorization header
+  const authHeader = req.headers.get('authorization');
+  let token = authHeader?.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  // 2. Check query param or body
+  if (!token) {
+    const { searchParams } = new URL(req.url);
+    token = searchParams.get('token') || body?.token || null;
+  }
+
+  const isDev = process.env.NODE_ENV !== 'production';
+
+  if (!token) {
+    if (isDev && (process.env.DEV_BYPASS_PDF_AUTH === 'true' || process.env.TEST_ENV === 'true')) {
+      return { uid: 'dev_admin', role: 'Admin' };
+    }
+    throw new Error('UNAUTHORIZED: Authentication is required to generate or download documents.');
+  }
+
+  // Handle mock dev tokens in non-production environments
+  if (isDev) {
+    if (token === 'test-dev-admin-token' || token === 'test-dev-token') {
+      return { uid: 'dev_admin', role: 'Admin' };
+    }
+    if (token === 'test-dev-customer-token') {
+      return { uid: 'cust_sample_123', role: 'Customer' };
+    }
+  }
+
+  try {
+    const decoded = await adminAuth.verifyIdToken(token);
+    const uid = decoded.uid;
+    let role = (decoded.role as UserRole) || null;
+
+    if (!role) {
+      const profileSnap = await adminDb.collection('profiles').doc(uid).get();
+      if (profileSnap.exists) {
+        role = (profileSnap.data()?.role as UserRole) || 'Customer';
+      } else {
+        role = 'Customer';
+      }
+    }
+
+    return { uid, role };
+  } catch (err: any) {
+    throw new Error(`UNAUTHORIZED: Invalid or expired authentication token (${err.message || 'Verification failed'}).`);
+  }
+}
+
+/**
+ * Authorize requesting user for requested document type and target customer (BILL-02)
+ */
+function checkDocumentAccess(
+  caller: { uid: string; role: UserRole },
+  type: string,
+  targetCustomerId?: string | null
+): void {
+  const staffRoles: UserRole[] = ['Admin', 'Owner', 'Manager', 'Appraiser', 'Cashier', 'Employee', 'Accountant'];
+  const isStaff = staffRoles.includes(caller.role);
+
+  if (isStaff) {
+    return; // Staff can generate all documents
+  }
+
+  if (caller.role === 'Customer') {
+    const allowedCustomerDocTypes = [
+      'ticket', 'pawn_ticket', 'loan_agreement',
+      'receipt', 'payment_receipt', 'bill', 'payment_bill',
+      'interest_receipt', 'principal_receipt', 'partial_receipt',
+      'settlement_receipt', 'closure', 'loan_closure',
+      'release', 'release_certificate', 'release_receipt', 'gold_release',
+      'statement', 'loan_statement', 'customer_statement', 'outstanding_statement',
+      'loan_application'
+    ];
+
+    if (!allowedCustomerDocTypes.includes(type)) {
+      throw new Error('FORBIDDEN: Customers are not permitted to access internal accounting ledgers or audit reports.');
+    }
+
+    if (targetCustomerId && targetCustomerId !== caller.uid) {
+      throw new Error('FORBIDDEN: You do not have permission to view or download documents belonging to another customer.');
+    }
+
+    return;
+  }
+
+  throw new Error('FORBIDDEN: Insufficient permissions to access this document.');
+}
+
+/**
+ * Fetch image buffer from Firebase Storage bucket or external URL (IMG-02)
+ */
+async function fetchImageBuffer(urlOrData: string | null | undefined): Promise<Buffer | null> {
+  if (!urlOrData) return null;
+
+  // Handle data URIs
+  if (urlOrData.startsWith('data:image')) {
+    const commaIdx = urlOrData.indexOf(',');
+    if (commaIdx !== -1) {
+      return Buffer.from(urlOrData.slice(commaIdx + 1), 'base64');
+    }
+    return null;
+  }
+
+  // Handle Firebase Storage URLs or gs:// URIs using Admin SDK
+  try {
+    if (urlOrData.includes('firebasestorage.googleapis.com') || urlOrData.startsWith('gs://')) {
+      let objectPath: string | null = null;
+      if (urlOrData.startsWith('gs://')) {
+        const parts = urlOrData.replace('gs://', '').split('/');
+        parts.shift(); // remove bucket
+        objectPath = parts.join('/');
+      } else {
+        const match = urlOrData.match(/\/o\/([^?]+)/);
+        if (match && match[1]) {
+          objectPath = decodeURIComponent(match[1]);
+        }
+      }
+
+      if (objectPath) {
+        try {
+          const bucket = adminStorage.bucket();
+          const file = bucket.file(objectPath);
+          const [exists] = await file.exists();
+          if (exists) {
+            const [buffer] = await file.download();
+            return buffer;
+          }
+        } catch (storageErr) {
+          console.warn('[PDF] Admin storage direct download notice:', storageErr);
+        }
+      }
+    }
+
+    // Fallback: standard HTTP fetch
+    const res = await fetch(urlOrData);
+    if (res.ok) {
+      const ab = await res.arrayBuffer();
+      return Buffer.from(ab);
+    }
+  } catch (err) {
+    console.warn('[PDF] Failed to fetch image buffer:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Helper to normalize and deduplicate collateral photo URLs (IMG-01)
+ */
+function getCollateralPhotoUrls(items: any[]): string[] {
+  return items.flatMap(g => {
+    const urls: string[] = [];
+    if (g.front_photo_url) urls.push(g.front_photo_url);
+    if (g.back_photo_url) urls.push(g.back_photo_url);
+    if (g.side_photo_url) urls.push(g.side_photo_url);
+    if (Array.isArray(g.photos)) urls.push(...g.photos);
+    return urls;
+  }).filter((url, idx, arr) => Boolean(url) && arr.indexOf(url) === idx);
+}
+
+/**
+ * Validate required legal business settings for document generation (BILL-03)
+ */
+function validateCompanySettings(settings: Record<string, string>): { isValid: boolean; missing: string[] } {
+  const required = ['company_name', 'company_address', 'company_phone', 'company_gst'];
+  const missing = required.filter(k => !settings[k] || settings[k].trim() === '');
+  return {
+    isValid: missing.length === 0,
+    missing,
+  };
+}
+
+function documentErrorStatus(error: unknown): number {
+  const message = error instanceof Error ? error.message : '';
+  if (message.startsWith('UNAUTHORIZED')) return 401;
+  if (message.startsWith('FORBIDDEN')) return 403;
+  if (message.startsWith('NOT_FOUND')) return 404;
+  if (message.startsWith('INVALID')) return 400;
+  return 500;
+}
+
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    return await generatePdfResponse(body);
+    const caller = await authenticatePdfRequest(req, body);
+    return await generatePdfResponse(body, caller);
   } catch (err: any) {
     console.error('PDF POST Error:', err);
+    const status = documentErrorStatus(err);
     return new Response(JSON.stringify({ error: err.message || 'Failed to generate PDF' }), {
-      status: 500,
+      status,
       headers: { 'Content-Type': 'application/json' }
     });
   }
@@ -48,6 +239,7 @@ export async function POST(req: NextRequest) {
 
 export async function GET(req: NextRequest) {
   try {
+    const caller = await authenticatePdfRequest(req);
     const { searchParams } = new URL(req.url);
     const rawType = searchParams.get('type') || 'ticket';
     const loanId = searchParams.get('loanId') || '';
@@ -65,23 +257,24 @@ export async function GET(req: NextRequest) {
       customAmount
     };
 
-    return await generatePdfResponse(params);
+    return await generatePdfResponse(params, caller);
   } catch (err: any) {
     console.error('PDF GET Error:', err);
+    const status = documentErrorStatus(err);
     return new Response(JSON.stringify({ error: err.message || 'Failed to generate PDF' }), {
-      status: 500,
+      status,
       headers: { 'Content-Type': 'application/json' }
     });
   }
 }
 
-async function generatePdfResponse(params: any) {
+async function generatePdfResponse(params: any, caller?: { uid: string; role: UserRole }) {
   const rawType = params.type || 'ticket';
   const type = rawType.toLowerCase();
   const isDownload = Boolean(params.download);
   const customAmount = parseFloat(params.customAmount || '0');
 
-  // 1. Fetch Company Settings
+  // 1. Authoritative Fetch of Company Settings (BILL-03)
   let companyName = 'PAVITHRA GOLD FINANCE';
   let companyLogo = '';
   let companyAddress = '45, Temple View Complex, West Masi Street, Madurai - 625001';
@@ -90,36 +283,45 @@ async function generatePdfResponse(params: any) {
   let companyGst = '33AABCP1234F1Z8';
   let companyPan = 'AABCP1234F';
   let companyCin = 'U65923TN2022PTC149821';
-  let companyWebsite = 'www.pavithragoldfinance.com';
+  const companyWebsite = 'www.pavithragoldfinance.com';
   let companyBranchName = 'Madurai Main Hub';
-  let companyBranchCode = 'MDU-01';
-  let companyDescription = 'TAMIL NADU LICENSED PAWNBROKER & GOLD FINANCIER • GOVT REG: TN/MDU/PB/2022/894';
+  const companyBranchCode = 'MDU-01';
+  const companyDescription = 'TAMIL NADU LICENSED PAWNBROKER & GOLD FINANCIER • GOVT REG: TN/MDU/PB/2022/894';
 
   try {
-    const settingsSnap = await getDocs(collection(db, 'settings'));
+    const settingsSnap = await adminDb.collection('settings').get();
+    const rawSettings: Record<string, string> = {};
     settingsSnap.forEach((d) => {
       const data = d.data();
-      if (d.id === 'company_name' && data.value) companyName = data.value;
-      if (d.id === 'company_logo' && data.value) companyLogo = data.value;
-      if (d.id === 'company_address' && data.value) companyAddress = data.value;
-      if (d.id === 'company_phone' && data.value) companyPhone = data.value;
-      if (d.id === 'company_email' && data.value) companyEmail = data.value;
-      if (d.id === 'company_gst' && data.value) companyGst = data.value;
-      if (d.id === 'company_pan' && data.value) companyPan = data.value;
-      if (d.id === 'company_cin' && data.value) companyCin = data.value;
-      if (d.id === 'company_branch_name' && data.value) companyBranchName = data.value;
+      if (data && data.value) {
+        rawSettings[d.id] = String(data.value);
+        if (d.id === 'company_name') companyName = data.value;
+        if (d.id === 'company_logo') companyLogo = data.value;
+        if (d.id === 'company_address') companyAddress = data.value;
+        if (d.id === 'company_phone') companyPhone = data.value;
+        if (d.id === 'company_email') companyEmail = data.value;
+        if (d.id === 'company_gst') companyGst = data.value;
+        if (d.id === 'company_pan') companyPan = data.value;
+        if (d.id === 'company_cin') companyCin = data.value;
+        if (d.id === 'company_branch_name') companyBranchName = data.value;
+      }
     });
+
+    const validation = validateCompanySettings(rawSettings);
+    if (!validation.isValid && process.env.NODE_ENV === 'production' && !params.allowFallbackSettings) {
+      console.warn(`[PDF BILL-03 Warning] Incomplete production company settings: ${validation.missing.join(', ')}`);
+    }
   } catch (e) {
     // Graceful fallback to licensed defaults
   }
 
-  // Pre-load data objects if provided directly in payload
-  let loanData: any = params.loanData || null;
-  let customerData: any = params.customerData || null;
-  let paymentData: any = params.paymentData || null;
-  let goldItems: any[] = params.goldItems || [];
-  let paymentsHistory: any[] = params.paymentsHistory || [];
-  let customerLoansList: any[] = params.customerLoansList || [];
+  // 2. Authoritative Server-Side Data Retrieval via Admin SDK (BILL-01, BILL-02)
+  let paymentData: any = null;
+  let loanData: any = null;
+  let customerData: any = null;
+  let goldItems: any[] = [];
+  let paymentsHistory: any[] = [];
+  let customerLoansList: any[] = [];
 
   // Helper for Data URI
   const toDataUri = (buf: Buffer | null, mime = 'image/png'): string | null => {
@@ -127,91 +329,172 @@ async function generatePdfResponse(params: any) {
     return `data:${mime};base64,${buf.toString('base64')}`;
   };
 
-  // If IDs passed and records missing, attempt Firestore retrieval
+  // Retrieve Payment record if paymentId provided
+  if (params.paymentId) {
+    try {
+      const paySnap = await adminDb.collection('payments').doc(params.paymentId).get();
+      if (paySnap.exists) paymentData = { id: paySnap.id, ...paySnap.data() };
+    } catch (e) {
+      console.warn('[PDF] Error fetching payment:', e);
+    }
+  }
+
   if (params.paymentId && !paymentData) {
-    try {
-      const paySnap = await getDoc(doc(db, 'payments', params.paymentId));
-      if (paySnap.exists()) paymentData = { id: paySnap.id, ...paySnap.data() };
-    } catch {}
+    throw new Error('NOT_FOUND: Payment record was not found. A receipt cannot be generated without its saved payment.');
   }
 
-  if ((params.loanId || paymentData?.loan_id) && !loanData) {
-    const targetLoanId = params.loanId || paymentData?.loan_id;
+  // Retrieve Loan record if loanId provided or inferred from payment
+  const targetLoanId = params.loanId || paymentData?.loan_id;
+  if (targetLoanId) {
     try {
-      const loanSnap = await getDoc(doc(db, 'loans', targetLoanId));
-      if (loanSnap.exists()) loanData = { id: loanSnap.id, ...loanSnap.data() };
-    } catch {}
+      let loanSnap = await adminDb.collection('loans').doc(targetLoanId).get();
+      if (!loanSnap.exists) {
+        // Fallback: search by loan_number
+        const qSnap = await adminDb.collection('loans').where('loan_number', '==', targetLoanId).limit(1).get();
+        if (!qSnap.empty) {
+          loanSnap = qSnap.docs[0];
+        }
+      }
+      if (loanSnap.exists) loanData = { id: loanSnap.id, ...loanSnap.data() };
+    } catch (e) {
+      console.warn('[PDF] Error fetching loan:', e);
+    }
   }
 
-  if ((params.customerId || loanData?.customer_id || paymentData?.customer_id) && !customerData) {
-    const targetCustId = params.customerId || loanData?.customer_id || paymentData?.customer_id;
-    try {
-      const custSnap = await getDoc(doc(db, 'profiles', targetCustId));
-      if (custSnap.exists()) customerData = { id: custSnap.id, ...custSnap.data() };
-    } catch {}
+  if (targetLoanId && !loanData) {
+    throw new Error('NOT_FOUND: Loan record was not found.');
   }
 
-  if (loanData?.id && goldItems.length === 0) {
+  if (params.loanId && paymentData?.loan_id && loanData?.id !== paymentData.loan_id) {
+    throw new Error('INVALID: The supplied payment does not belong to the supplied loan.');
+  }
+
+  // Determine target customer ID and enforce document authorization (BILL-02)
+  const recordCustomerId = loanData?.customer_id || paymentData?.customer_id || null;
+  if (params.customerId && recordCustomerId && params.customerId !== recordCustomerId) {
+    throw new Error('INVALID: The supplied customer does not own the requested loan or payment.');
+  }
+  const targetCustId = params.customerId || recordCustomerId;
+  if (caller) {
+    checkDocumentAccess(caller, type, targetCustId);
+  }
+
+  // Retrieve Customer profile
+  if (targetCustId) {
     try {
-      const goldSnap = await getDocs(query(collection(db, 'gold_collateral'), where('loan_id', '==', loanData.id)));
+      const custSnap = await adminDb.collection('profiles').doc(targetCustId).get();
+      if (custSnap.exists) customerData = { id: custSnap.id, ...custSnap.data() };
+    } catch (e) {
+      console.warn('[PDF] Error fetching profile:', e);
+    }
+  }
+
+  if (targetCustId && !customerData) {
+    throw new Error('NOT_FOUND: Customer profile was not found for the requested document.');
+  }
+
+  // Financial documents must always originate from a persisted record. This
+  // prevents placeholder PDFs, fabricated bill values, and cross-customer
+  // access when callers supply invalid identifiers.
+  const paymentDocumentTypes = new Set([
+    'receipt', 'payment_receipt', 'bill', 'payment_bill', 'interest_receipt',
+    'principal_receipt', 'partial_receipt', 'settlement_receipt', 'penalty_receipt'
+  ]);
+  const loanDocumentTypes = new Set([
+    'ticket', 'pawn_ticket', 'loan_agreement', 'loan_application', 'release',
+    'release_certificate', 'release_receipt', 'gold_release', 'closure',
+    'loan_closure', 'loan_statement', 'outstanding_statement'
+  ]);
+  const customerDocumentTypes = new Set(['customer_statement', 'statement']);
+  if (paymentDocumentTypes.has(type) && !paymentData) {
+    throw new Error('INVALID: A saved payment ID is required for this receipt or bill.');
+  }
+  if (loanDocumentTypes.has(type) && !loanData) {
+    throw new Error('INVALID: A saved loan ID is required for this document.');
+  }
+  if (customerDocumentTypes.has(type) && !customerData) {
+    throw new Error('INVALID: A saved customer ID is required for this statement.');
+  }
+
+  // Retrieve Gold Collateral Items and Gallery Photos (IMG-01)
+  if (loanData?.id) {
+    try {
+      const goldSnap = await adminDb.collection('gold_collateral').where('loan_id', '==', loanData.id).get();
       goldItems = goldSnap.docs.map(g => ({ id: g.id, ...g.data() }));
-    } catch {}
+
+      // Also retrieve gold_photos collection records for complete photographic evidence
+      const photosSnap = await adminDb.collection('gold_photos').where('loan_id', '==', loanData.id).get();
+      const photosByCollateral = new Map<string, string[]>();
+      photosSnap.docs.forEach(pDoc => {
+        const p = pDoc.data();
+        if (p.collateral_id && p.photo_url) {
+          const list = photosByCollateral.get(p.collateral_id) || [];
+          list.push(p.photo_url);
+          photosByCollateral.set(p.collateral_id, list);
+        }
+      });
+
+      goldItems.forEach(item => {
+        const gallery = photosByCollateral.get(item.id) || [];
+        item.photos = Array.from(new Set([
+          ...(item.photos || []),
+          ...gallery,
+          item.front_photo_url,
+          item.back_photo_url,
+          item.side_photo_url,
+        ].filter(Boolean)));
+      });
+    } catch (e) {
+      console.warn('[PDF] Error fetching collateral:', e);
+    }
   }
 
-  if (customerData?.id && customerLoansList.length === 0) {
+  // Retrieve Customer All Loans if customer statement
+  if (customerData?.id && (type === 'customer_statement' || type === 'statement')) {
     try {
-      const lSnap = await getDocs(query(collection(db, 'loans'), where('customer_id', '==', customerData.id)));
+      const lSnap = await adminDb.collection('loans').where('customer_id', '==', customerData.id).get();
       customerLoansList = lSnap.docs.map(d => ({ id: d.id, ...d.data() }));
-    } catch {}
+    } catch (e) {
+      console.warn('[PDF] Error fetching customer loans list:', e);
+    }
   }
 
-  if (loanData?.id && paymentsHistory.length === 0) {
+  // Retrieve Payments History for loan or customer
+  if (loanData?.id) {
     try {
-      const pSnap = await getDocs(query(collection(db, 'payments'), where('loan_id', '==', loanData.id)));
+      const pSnap = await adminDb.collection('payments').where('loan_id', '==', loanData.id).get();
       paymentsHistory = pSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       paymentsHistory.sort((a, b) => (b.payment_date || '').localeCompare(a.payment_date || ''));
-    } catch {}
-  }
-
-  if (customerData?.id && paymentsHistory.length === 0) {
+    } catch (e) {
+      console.warn('[PDF] Error fetching payments history:', e);
+    }
+  } else if (customerData?.id) {
     try {
-      const pSnap = await getDocs(query(collection(db, 'payments'), where('customer_id', '==', customerData.id)));
+      const pSnap = await adminDb.collection('payments').where('customer_id', '==', customerData.id).get();
       paymentsHistory = pSnap.docs.map(d => ({ id: d.id, ...d.data() }));
       paymentsHistory.sort((a, b) => (b.payment_date || '').localeCompare(a.payment_date || ''));
-    } catch {}
+    } catch (e) {
+      console.warn('[PDF] Error fetching customer payments:', e);
+    }
   }
 
-  // Pre-load images (Logo, Customer Photo, Signature)
+  // Pre-load images using secure Admin Storage buffer retrieval (IMG-02)
   let logoUri: string | null = null;
   if (companyLogo) {
-    try {
-      const res = await fetch(companyLogo);
-      if (res.ok) logoUri = toDataUri(Buffer.from(await res.arrayBuffer()), 'image/png');
-    } catch {}
+    const buf = await fetchImageBuffer(companyLogo);
+    if (buf) logoUri = toDataUri(buf, 'image/png');
   }
 
   let customerPhotoUri: string | null = null;
   if (customerData?.photo_url) {
-    if (customerData.photo_url.startsWith('data:image')) {
-      customerPhotoUri = customerData.photo_url;
-    } else {
-      try {
-        const res = await fetch(customerData.photo_url);
-        if (res.ok) customerPhotoUri = toDataUri(Buffer.from(await res.arrayBuffer()), 'image/jpeg');
-      } catch {}
-    }
+    const buf = await fetchImageBuffer(customerData.photo_url);
+    if (buf) customerPhotoUri = toDataUri(buf, 'image/jpeg');
   }
 
   let customerSignatureUri: string | null = null;
   if (customerData?.signature_url) {
-    if (customerData.signature_url.startsWith('data:image')) {
-      customerSignatureUri = customerData.signature_url;
-    } else {
-      try {
-        const res = await fetch(customerData.signature_url);
-        if (res.ok) customerSignatureUri = toDataUri(Buffer.from(await res.arrayBuffer()), 'image/png');
-      } catch {}
-    }
+    const buf = await fetchImageBuffer(customerData.signature_url);
+    if (buf) customerSignatureUri = toDataUri(buf, 'image/png');
   }
 
   // Generate QR Code verification Data URI
@@ -404,21 +687,20 @@ async function generatePdfResponse(params: any) {
 
     curY += 24;
 
-    // Photographic Evidence (Embedded Gold Photos)
-    const goldPhotoUrls = goldItems.flatMap(g => [g.front_photo_url, g.back_photo_url].filter(Boolean)).slice(0, 4);
+    // Photographic Evidence (Embedded Gold Photos - IMG-01, IMG-02)
+    const goldPhotoUrls = getCollateralPhotoUrls(goldItems).slice(0, 4);
     if (goldPhotoUrls.length > 0) {
       docPdf.fillColor(brandBlue).fontSize(7.5).font('Helvetica-Bold').text('COLLATERAL PHOTOGRAPHIC EVIDENCE (SCALE & VAULT DEPOSIT):', 36, curY);
       curY += 12;
       let photoX = 36;
       for (const pUrl of goldPhotoUrls) {
         try {
-          let pUri = pUrl.startsWith('data:image') ? pUrl : null;
-          if (!pUri) {
-            const res = await fetch(pUrl);
-            if (res.ok) pUri = toDataUri(Buffer.from(await res.arrayBuffer()), 'image/jpeg');
-          }
-          if (pUri) {
-            docPdf.image(pUri, photoX, curY, { width: 70, height: 50, fit: [70, 50] });
+          const buf = await fetchImageBuffer(pUrl);
+          if (buf) {
+            const pUri = toDataUri(buf, 'image/jpeg');
+            if (pUri) {
+              docPdf.image(pUri, photoX, curY, { width: 70, height: 50, fit: [70, 50] });
+            }
           }
         } catch {}
         photoX += 80;
@@ -600,8 +882,16 @@ async function generatePdfResponse(params: any) {
   // --------------------------------------------------------------------------
   } else if (type === 'receipt' || type === 'payment_receipt' || type === 'interest_receipt' || type === 'principal_receipt' || type === 'bill' || type === 'payment_bill') {
     const isBillDoc = type === 'bill' || type === 'payment_bill';
+    const isInterestDoc = type === 'interest_receipt' || paymentData?.payment_type === 'Interest';
+    const isPrincipalDoc = type === 'principal_receipt' || paymentData?.payment_type === 'Principal';
+
+    let docHeading = 'OFFICIAL MONEY RECEIPT (PLEDGE REPAYMENT)';
+    if (isBillDoc) docHeading = 'OFFICIAL REPAYMENT BILL & SETTLEMENT INVOICE';
+    else if (isInterestDoc) docHeading = 'OFFICIAL INTEREST REPAYMENT RECEIPT';
+    else if (isPrincipalDoc) docHeading = 'OFFICIAL PRINCIPAL REDUCTION RECEIPT';
+
     drawStandardHeader(
-      isBillDoc ? 'OFFICIAL REPAYMENT BILL & SETTLEMENT INVOICE' : 'OFFICIAL MONEY RECEIPT (PLEDGE REPAYMENT)',
+      docHeading,
       isBillDoc ? `BILL NO: ${paymentData?.receipt_number || '—'}` : `RECEIPT NO: ${paymentData?.receipt_number || '—'}`
     );
 
@@ -612,32 +902,119 @@ async function generatePdfResponse(params: any) {
     const principalPortion = paymentData?.principal_portion || (paidAmt - interestPortion);
     const penaltyPortion = paymentData?.penalty_portion || 0;
 
-    // Receipt Meta Box
-    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 60).fill().strokeColor(borderGray).rect(36, curY, 522, 60).stroke();
+    // Receipt Meta Box (Includes live customer KYC and pledge date)
+    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 68).fill().strokeColor(borderGray).rect(36, curY, 522, 68).stroke();
     docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica')
-          .text(`Bill / Receipt Number: ${paymentData?.receipt_number || '—'}`, 44, curY + 8)
-          .text(`Payment Date & Time: ${paymentData?.payment_date ? new Date(paymentData.payment_date).toLocaleString('en-IN') : todayStr}`, 300, curY + 8)
-          .text(`Borrower Name: ${customerData?.name || loanData?.customer?.name || '—'}`, 44, curY + 22)
-          .text(`Customer ID: ${customerData?.customer_number || customerData?.id || '—'}`, 300, curY + 22)
-          .text(`Loan Account No: ${loanData?.loan_number || '—'}`, 44, curY + 36)
-          .text(`Payment Mode: ${paymentData?.mode || 'UPI / Cash'} (Ref: ${paymentData?.reference_note || paymentData?.utr || 'DIRECT-COUNTER'})`, 300, curY + 36)
-          .text(`Primary Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 44, curY + 48)
-          .text(`Original Principal Disbursed: ${formatINR(loanData?.principal_amount || 0)}`, 300, curY + 48);
+          .text(`Bill / Receipt Number: ${paymentData?.receipt_number || '—'}`, 44, curY + 7)
+          .text(`Payment Date & Time: ${paymentData?.payment_date ? new Date(paymentData.payment_date).toLocaleString('en-IN') : todayStr}`, 300, curY + 7)
+          .text(`Borrower Name: ${customerData?.name || loanData?.customer?.name || '—'}`, 44, curY + 19)
+          .text(`Customer ID: ${customerData?.customer_number || customerData?.id || '—'}`, 300, curY + 19)
+          .text(`Loan Account No: ${loanData?.loan_number || '—'}`, 44, curY + 31)
+          .text(`Pledge Date: ${loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr}`, 300, curY + 31)
+          .text(`Primary Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 44, curY + 43)
+          .text(`Payment Mode: ${paymentData?.mode || 'UPI / Cash'} (Ref: ${paymentData?.transaction_ref || paymentData?.reference_note || paymentData?.utr || 'DIRECT-COUNTER'})`, 300, curY + 43);
 
-    curY += 72;
+    if (paymentData?.interest_period_from && paymentData?.interest_period_to) {
+      docPdf.fillColor(brandGold).fontSize(7).font('Helvetica-Bold')
+            .text(`Interest Period Covered: ${paymentData.interest_period_from} to ${paymentData.interest_period_to}`, 44, curY + 55);
+      docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+            .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
+    } else {
+      docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+            .text(`KYC Verification: Aadhaar ${customerData?.national_id ? 'UID: ' + customerData.national_id : 'Verified'}  |  PAN: ${customerData?.pan_number || 'On File'}`, 44, curY + 55)
+            .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
+    }
+
+    curY += 76;
+
+    // PLEDGED GOLD COLLATERAL & ORNAMENT INVENTORY (with weights, purity, rate, and photo)
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('PLEDGED GOLD COLLATERAL & ORNAMENT DETAILS', 36, curY);
+    curY += 11;
+
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
+    docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
+          .text('#', 42, curY + 3.5)
+          .text('Ornament Description', 58, curY + 3.5)
+          .text('Purity', 210, curY + 3.5)
+          .text('Gross Wt', 260, curY + 3.5)
+          .text('Stone Wt', 310, curY + 3.5)
+          .text('Net Wt', 360, curY + 3.5)
+          .text('Gold Rate/g', 410, curY + 3.5)
+          .text('Valuation', 475, curY + 3.5);
+
+    curY += 15;
+    let recGross = 0, recStone = 0, recNet = 0, recVal = 0;
+
+    if (goldItems.length > 0) {
+      goldItems.slice(0, 3).forEach((item, idx) => {
+        const itemVal = item.valuation_inr || (item.net_weight * (item.market_rate_per_gram || item.gold_rate_per_gram || 5400));
+        docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+              .text(String(idx + 1), 42, curY + 3)
+              .text(item.item_description || item.ornament_type || 'Gold Item', 58, curY + 3, { width: 145, ellipsis: true })
+              .text(item.purity_karat || '22K', 210, curY + 3)
+              .text(`${(item.gross_weight || item.weight_grams || 0).toFixed(2)}g`, 260, curY + 3)
+              .text(`${(item.stone_weight || 0).toFixed(2)}g`, 310, curY + 3)
+              .text(`${(item.net_weight || item.weight_grams || 0).toFixed(2)}g`, 360, curY + 3)
+              .text(formatINR(item.market_rate_per_gram || item.gold_rate_per_gram || 5400), 410, curY + 3)
+              .text(formatINR(itemVal), 475, curY + 3);
+
+        recGross += item.gross_weight || item.weight_grams || 0;
+        recStone += item.stone_weight || 0;
+        recNet += item.net_weight || item.weight_grams || 0;
+        recVal += itemVal;
+        curY += 14;
+      });
+    } else {
+      docPdf.fillColor('#ffffff').rect(36, curY, 522, 14).fill();
+      docPdf.fillColor(textMuted).fontSize(6.5).font('Helvetica').text('Gold ornament records verified under safe custody.', 42, curY + 3);
+      curY += 14;
+    }
+
+    // Totals line for Collateral
+    docPdf.fillColor('#e2e8f0').rect(36, curY, 522, 14).fill();
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
+          .text('COLLATERAL TOTALS:', 58, curY + 3)
+          .text(`${recGross.toFixed(2)}g`, 260, curY + 3)
+          .text(`${recStone.toFixed(2)}g`, 310, curY + 3)
+          .text(`${recNet.toFixed(2)}g`, 360, curY + 3)
+          .text(formatINR(recVal), 475, curY + 3);
+
+    curY += 18;
+
+    // Photographic Evidence (Embedded Gold Photos - IMG-01, IMG-02)
+    const recPhotoUrls = getCollateralPhotoUrls(goldItems).slice(0, 3);
+    if (recPhotoUrls.length > 0) {
+      docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('COLLATERAL PHOTOGRAPHIC EVIDENCE (VAULT RECORD):', 36, curY);
+      curY += 10;
+      let photoX = 36;
+      for (const pUrl of recPhotoUrls) {
+        try {
+          const buf = await fetchImageBuffer(pUrl);
+          if (buf) {
+            const pUri = toDataUri(buf, 'image/jpeg');
+            if (pUri) {
+              docPdf.image(pUri, photoX, curY, { width: 55, height: 38, fit: [55, 38] });
+            }
+          }
+        } catch {}
+        photoX += 65;
+      }
+      curY += 44;
+    }
 
     // Payment Allocation Table
     docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('REPAYMENT ALLOCATION BREAKDOWN', 36, curY);
-    curY += 12;
+    curY += 11;
 
-    docPdf.fillColor(brandDark).rect(36, curY, 522, 16).fill();
-    docPdf.fillColor('#ffffff').fontSize(7).font('Helvetica-Bold')
-          .text('#', 44, curY + 4)
-          .text('Payment Component', 70, curY + 4)
-          .text('Accounting Type', 280, curY + 4)
-          .text('Amount Credited', 450, curY + 4, { align: 'right', width: 96 });
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
+    docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
+          .text('#', 44, curY + 3.5)
+          .text('Payment Component', 70, curY + 3.5)
+          .text('Accounting Type', 280, curY + 3.5)
+          .text('Amount Credited', 450, curY + 3.5, { align: 'right', width: 96 });
 
-    curY += 16;
+    curY += 15;
 
     const rows = [
       { num: '1', name: 'Accrued Interest Cleared', type: 'Interest Ledger Credit', amt: interestPortion },
@@ -646,78 +1023,260 @@ async function generatePdfResponse(params: any) {
     ];
 
     rows.forEach((r, idx) => {
-      docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 16).fill();
-      docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
-            .text(r.num, 44, curY + 4)
-            .text(r.name, 70, curY + 4)
-            .text(r.type, 280, curY + 4)
-            .text(formatINR(r.amt), 450, curY + 4, { align: 'right', width: 96 });
-      curY += 16;
+      docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
+      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+            .text(r.num, 44, curY + 3)
+            .text(r.name, 70, curY + 3)
+            .text(r.type, 280, curY + 3)
+            .text(formatINR(r.amt), 450, curY + 3, { align: 'right', width: 96 });
+      curY += 14;
     });
 
     // Total Paid Line
-    docPdf.fillColor('#dbeafe').rect(36, curY, 522, 20).fill();
-    docPdf.fillColor(brandBlue).fontSize(8.5).font('Helvetica-Bold')
-          .text('TOTAL AMOUNT RECEIVED (NET PAID):', 70, curY + 5)
-          .text(formatINR(paidAmt), 450, curY + 5, { align: 'right', width: 96 });
+    docPdf.fillColor('#dbeafe').rect(36, curY, 522, 18).fill();
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold')
+          .text('TOTAL AMOUNT RECEIVED (NET PAID):', 70, curY + 4)
+          .text(formatINR(paidAmt), 450, curY + 4, { align: 'right', width: 96 });
 
-    curY += 24;
+    curY += 21;
 
     // Amount in words
-    docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica-Bold')
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica-Bold')
           .text(`Amount in Words: ${numberToIndianWords(paidAmt)}`, 36, curY);
 
-    curY += 18;
+    curY += 14;
 
     // Outstanding Status After This Payment
     const remainingPrincipal = loanData ? Math.max(0, (loanData.principal_amount || 0) - (loanData.total_principal_paid || 0)) : 0;
     const remainingInterest = loanData?.outstanding_interest || 0;
     const totalOutstanding = remainingPrincipal + remainingInterest;
 
-    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 56).fill().strokeColor(borderGray).rect(36, curY, 522, 56).stroke();
-    docPdf.fillColor(brandBlue).fontSize(7.5).font('Helvetica-Bold').text('LOAN POSITION POST-TRANSACTION', 44, curY + 6);
+    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 46).fill().strokeColor(borderGray).rect(36, curY, 522, 46).stroke();
+    docPdf.fillColor(brandBlue).fontSize(7.5).font('Helvetica-Bold').text('LOAN POSITION POST-TRANSACTION', 44, curY + 5);
     docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
-          .text(`Remaining Principal: ${formatINR(remainingPrincipal)}`, 44, curY + 18)
-          .text(`Remaining Interest: ${formatINR(remainingInterest)}`, 200, curY + 18)
-          .text(`Total Outstanding: ${formatINR(totalOutstanding)}`, 370, curY + 18)
-          .text(`Next Repayment Due Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : 'As per monthly schedule'}`, 44, curY + 34)
-          .text(`Loan Status: ${loanData?.status || 'Active'}`, 300, curY + 34);
+          .text(`Remaining Principal: ${formatINR(remainingPrincipal)}`, 44, curY + 17)
+          .text(`Remaining Interest: ${formatINR(remainingInterest)}`, 200, curY + 17)
+          .text(`Total Outstanding: ${formatINR(totalOutstanding)}`, 370, curY + 17)
+          .text(`Next Repayment Due Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : 'As per monthly schedule'}`, 44, curY + 30)
+          .text(`Loan Status: ${loanData?.status || 'Active'}`, 300, curY + 30);
 
-    curY += 68;
+    curY += 54;
 
     // Signatures
-    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(36, curY, 255, 45).stroke();
-    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(303, curY, 255, 45).stroke();
+    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(36, curY, 255, 38).stroke();
+    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(303, curY, 255, 38).stroke();
 
-    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Pledgor Repayment Acknowledgment', 44, curY + 32);
-    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold').text(`For ${companyName.toUpperCase()}`, 311, curY + 6);
-    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Authorized Cashier / Cash Counter Signatory', 311, curY + 32);
+    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Pledgor Repayment Acknowledgment', 44, curY + 26);
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold').text(`For ${companyName.toUpperCase()}`, 311, curY + 5);
+    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Authorized Cashier / Cash Counter Signatory', 311, curY + 26);
 
     // --------------------------------------------------------------------------
     // ROTATING TAMIL SLOGAN BANNER (Bill Slogan System — 300 Unique Slogans)
     // --------------------------------------------------------------------------
     if (billSloganText) {
-      curY += 52;
-      docPdf.fillColor('#fffbeb').rect(36, curY, 522, 40).fill()
-            .strokeColor('#fde68a').lineWidth(0.8).rect(36, curY, 522, 40).stroke();
+      curY += 44;
+      docPdf.fillColor('#fffbeb').rect(36, curY, 522, 34).fill()
+            .strokeColor('#fde68a').lineWidth(0.8).rect(36, curY, 522, 34).stroke();
 
-      docPdf.fillColor('#92400e').fontSize(6).font('Helvetica-Bold')
-            .text(`OFFICIAL BILL SLOGAN • ${billSloganId || 'PGF-SLOGAN'}`, 44, curY + 6);
+      docPdf.fillColor('#92400e').fontSize(5.5).font('Helvetica-Bold')
+            .text(`OFFICIAL BILL SLOGAN • ${billSloganId || 'PGF-SLOGAN'}`, 44, curY + 4);
 
       if (hasTamilFont) {
-        docPdf.fillColor('#78350f').fontSize(9).font('TamilFont')
-              .text(`“ ${billSloganText} ”`, 44, curY + 16, { width: 506, align: 'center' });
+        docPdf.fillColor('#78350f').fontSize(8.5).font('TamilFont')
+              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
       } else {
-        docPdf.fillColor('#78350f').fontSize(8.5).font('Helvetica-Bold')
-              .text(`“ ${billSloganText} ”`, 44, curY + 16, { width: 506, align: 'center' });
+        docPdf.fillColor('#78350f').fontSize(8).font('Helvetica-Bold')
+              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
       }
 
-      docPdf.fillColor('#b45309').fontSize(5.5).font('Helvetica')
-            .text('Pavithra Gold Finance • Trusted Gold Loan Partner • Tamil Nadu', 44, curY + 29, { width: 506, align: 'center' });
+      docPdf.fillColor('#b45309').fontSize(5).font('Helvetica')
+            .text('Pavithra Gold Finance • Trusted Gold Loan Partner • Tamil Nadu', 44, curY + 24, { width: 506, align: 'center' });
     }
 
   // --------------------------------------------------------------------------
-  // 4. CUSTOMER CONSOLIDATED STATEMENT (customer_statement)
+  // 4. GOLD RELEASE & LOAN DISCHARGE CERTIFICATE (release / release_certificate / gold_release)
+  // --------------------------------------------------------------------------
+  } else if (type === 'release' || type === 'release_certificate' || type === 'release_receipt' || type === 'gold_release' || type === 'closure' || type === 'loan_closure') {
+    const relNumber = paymentData?.release_number || loanData?.release_number || 'PGF-REL-000001';
+    drawStandardHeader('OFFICIAL GOLD RELEASE & DISCHARGE CERTIFICATE', `VOUCHER NO: ${relNumber}`);
+
+    let curY = 138;
+
+    // Borrower & Loan Dossier
+    docPdf.fillColor(lightCardBg).rect(36, curY, 255, 96).fill().strokeColor(borderGray).rect(36, curY, 255, 96).stroke();
+    docPdf.fillColor(lightCardBg).rect(303, curY, 255, 96).fill().strokeColor(borderGray).rect(303, curY, 255, 96).stroke();
+
+    // Borrower
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('BORROWER / PLEDGOR DOSSIER', 44, curY + 7);
+    if (customerPhotoUri) {
+      try {
+        docPdf.image(customerPhotoUri, 236, curY + 6, { width: 44, height: 44 });
+      } catch {}
+    }
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Name: ${customerData?.name || loanData?.customer?.name || '—'}`, 44, curY + 20)
+          .text(`Customer ID: ${customerData?.customer_number || customerData?.id || '—'}`, 44, curY + 32)
+          .text(`Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 44, curY + 44)
+          .text(`Address: ${customerData?.address ? `${customerData.address}${customerData.city ? ', ' + customerData.city : ''}` : '—'}`, 44, curY + 56, { width: 185 })
+          .text(`Aadhaar: ${customerData?.national_id || 'Verified'}  |  PAN: ${customerData?.pan_number || 'On File'}`, 44, curY + 80);
+
+    // Loan & Release Terms
+    const origDateStr = loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr;
+    const relDateStr = loanData?.closed_at ? new Date(loanData.closed_at).toLocaleDateString('en-IN') : (paymentData?.payment_date ? new Date(paymentData.payment_date).toLocaleDateString('en-IN') : todayStr);
+
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('LOAN DISCHARGE & SETTLEMENT TERMS', 311, curY + 7);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Loan Account Number: ${loanData?.loan_number || '—'}`, 311, curY + 20)
+          .text(`Pledge Origination Date: ${origDateStr}`, 311, curY + 32)
+          .text(`Official Release Date: ${relDateStr}`, 311, curY + 44)
+          .text(`Sanctioned Principal: ${formatINR(loanData?.principal_amount || 0)}`, 311, curY + 56)
+          .text(`Annual Interest Rate: ${loanData?.interest_rate_apr || 18}% APR`, 311, curY + 68)
+          .text(`Settlement Status: FULLY SETTLED & CLOSED (ZERO BALANCE)`, 311, curY + 80);
+
+    curY += 104;
+
+    // Released Gold Ornaments Table
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('RELEASED GOLD JEWELLERY & ORNAMENTS INVENTORY', 36, curY);
+    curY += 11;
+
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
+    docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
+          .text('#', 42, curY + 3.5)
+          .text('Ornament Description', 58, curY + 3.5)
+          .text('Purity', 210, curY + 3.5)
+          .text('Gross Wt', 260, curY + 3.5)
+          .text('Stone Wt', 310, curY + 3.5)
+          .text('Net Wt', 360, curY + 3.5)
+          .text('Valuation', 415, curY + 3.5)
+          .text('Custody Status', 475, curY + 3.5);
+
+    curY += 15;
+    let relGross = 0, relStone = 0, relNet = 0, relVal = 0;
+
+    if (goldItems.length > 0) {
+      goldItems.forEach((item, idx) => {
+        const itemVal = item.valuation_inr || (item.net_weight * (item.market_rate_per_gram || item.gold_rate_per_gram || 5400));
+        docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+              .text(String(idx + 1), 42, curY + 3)
+              .text(item.item_description || item.ornament_type || 'Gold Item', 58, curY + 3, { width: 145, ellipsis: true })
+              .text(item.purity_karat || '22K', 210, curY + 3)
+              .text(`${(item.gross_weight || item.weight_grams || 0).toFixed(2)}g`, 260, curY + 3)
+              .text(`${(item.stone_weight || 0).toFixed(2)}g`, 310, curY + 3)
+              .text(`${(item.net_weight || item.weight_grams || 0).toFixed(2)}g`, 360, curY + 3)
+              .text(formatINR(itemVal), 415, curY + 3)
+              .text('RELEASED', 475, curY + 3);
+
+        relGross += item.gross_weight || item.weight_grams || 0;
+        relStone += item.stone_weight || 0;
+        relNet += item.net_weight || item.weight_grams || 0;
+        relVal += itemVal;
+        curY += 14;
+      });
+    } else {
+      docPdf.fillColor('#ffffff').rect(36, curY, 522, 14).fill();
+      docPdf.fillColor(textMuted).fontSize(6.5).font('Helvetica').text('Gold ornament records verified under release custody.', 42, curY + 3);
+      curY += 14;
+    }
+
+    // Totals line
+    docPdf.fillColor('#e2e8f0').rect(36, curY, 522, 14).fill();
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
+          .text('TOTAL RELEASED GOLD COLLATERAL:', 58, curY + 3)
+          .text(`${relGross.toFixed(2)}g`, 260, curY + 3)
+          .text(`${relStone.toFixed(2)}g`, 310, curY + 3)
+          .text(`${relNet.toFixed(2)}g`, 360, curY + 3)
+          .text(formatINR(relVal), 415, curY + 3)
+          .text('ALL RELEASED', 475, curY + 3);
+
+    curY += 18;
+
+    // Photographic Evidence (Embedded Gold Photos - IMG-01, IMG-02)
+    const relPhotoUrls = getCollateralPhotoUrls(goldItems).slice(0, 4);
+    if (relPhotoUrls.length > 0) {
+      docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('PHOTOGRAPHIC EVIDENCE OF RELEASED COLLATERAL:', 36, curY);
+      curY += 10;
+      let photoX = 36;
+      for (const pUrl of relPhotoUrls) {
+        try {
+          const buf = await fetchImageBuffer(pUrl);
+          if (buf) {
+            const pUri = toDataUri(buf, 'image/jpeg');
+            if (pUri) {
+              docPdf.image(pUri, photoX, curY, { width: 60, height: 42, fit: [60, 42] });
+            }
+          }
+        } catch {}
+        photoX += 70;
+      }
+      curY += 48;
+    }
+
+    // Full Financial Discharge & Settlement Breakdown
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('FINAL SETTLEMENT & ZERO BALANCE AUDIT', 36, curY);
+    curY += 11;
+
+    const totPrincipalPaid = loanData?.principal_amount || loanData?.total_principal_paid || 0;
+    const totInterestPaid = loanData?.total_interest_paid || paymentData?.interest_portion || 0;
+    const finalAmountPaid = paymentData?.amount_paid || (loanData?.principal_amount || 0);
+
+    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 44).fill().strokeColor(borderGray).rect(36, curY, 522, 44).stroke();
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Sanctioned Principal: ${formatINR(loanData?.principal_amount || 0)}`, 44, curY + 7)
+          .text(`Total Principal Repaid: ${formatINR(totPrincipalPaid)}`, 200, curY + 7)
+          .text(`Total Interest Repaid: ${formatINR(totInterestPaid)}`, 370, curY + 7)
+          .text(`Final Release Settlement Paid: ${formatINR(finalAmountPaid)} (${numberToIndianWords(finalAmountPaid)})`, 44, curY + 19)
+          .text(`Official Release Voucher: ${relNumber}`, 44, curY + 31)
+          .text(`Remaining Balance Due: ${formatINR(0)} (ZERO OUTSTANDING)`, 300, curY + 31);
+
+    curY += 52;
+
+    // Statutory Borrower Release Undertaking
+    docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('STATUTORY DISCHARGE & RELEASE UNDERTAKING:', 36, curY);
+    curY += 9;
+    docPdf.fillColor(textMuted).fontSize(5.5).font('Helvetica')
+          .text('1. The borrower acknowledges physical handover and safe receipt of all pledged gold jewellery ornaments described above in intact, original condition.', 36, curY)
+          .text('2. The borrower and Pavithra Gold Finance confirm that this loan account is fully discharged with zero balance remaining.', 36, curY + 8)
+          .text('3. All pledge encumbrances and security liens created under Tamil Nadu Pawnbrokers Act are hereby permanently terminated.', 36, curY + 16);
+
+    curY += 28;
+
+    // Signatures Block
+    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(36, curY, 255, 42).stroke();
+    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(303, curY, 255, 42).stroke();
+
+    if (customerSignatureUri) {
+      try {
+        docPdf.image(customerSignatureUri, 44, curY + 3, { width: 85, height: 24 });
+      } catch {}
+    }
+    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica-Bold').text('BORROWER SIGNATURE & ACKNOWLEDGMENT OF RECEIPT', 44, curY + 30);
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold').text(`For ${companyName.toUpperCase()}`, 311, curY + 6);
+    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Authorized Pawnbroker / Vault Custodian Signatory', 311, curY + 30);
+
+    // Rotating Tamil Slogan Banner
+    if (billSloganText) {
+      curY += 48;
+      docPdf.fillColor('#fffbeb').rect(36, curY, 522, 34).fill()
+            .strokeColor('#fde68a').lineWidth(0.8).rect(36, curY, 522, 34).stroke();
+
+      docPdf.fillColor('#92400e').fontSize(5.5).font('Helvetica-Bold')
+            .text(`OFFICIAL RELEASE SLOGAN • ${billSloganId || 'PGF-SLOGAN'}`, 44, curY + 4);
+
+      if (hasTamilFont) {
+        docPdf.fillColor('#78350f').fontSize(8.5).font('TamilFont')
+              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+      } else {
+        docPdf.fillColor('#78350f').fontSize(8).font('Helvetica-Bold')
+              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+      }
+
+      docPdf.fillColor('#b45309').fontSize(5).font('Helvetica')
+            .text('Pavithra Gold Finance • Committed to Transparency, Honor & Excellence', 44, curY + 24, { width: 506, align: 'center' });
+    }
+
+  // --------------------------------------------------------------------------
+  // 5. CUSTOMER CONSOLIDATED STATEMENT (customer_statement)
   // --------------------------------------------------------------------------
   } else if (type === 'customer_statement') {
     drawStandardHeader('CUSTOMER CONSOLIDATED PORTFOLIO STATEMENT', `CUSTOMER NO: ${customerData?.customer_number || customerData?.id || '—'}`);

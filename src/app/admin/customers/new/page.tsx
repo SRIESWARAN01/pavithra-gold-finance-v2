@@ -33,7 +33,7 @@ import { isFirebaseConfigured } from '@/lib/auth';
 import { uploadProfilePhoto, uploadSignature } from '@/lib/storage';
 import { createProfile, updateProfile } from '@/lib/db/profiles';
 import { createNotification } from '@/lib/db/notifications';
-import { db } from '@/lib/firebase';
+import { auth, db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
 import type { UserRole } from '@/types/database';
 import ConfettiCelebration from '@/components/ConfettiCelebration';
@@ -193,9 +193,16 @@ export default function CustomerOnboarding() {
       if (isFirebaseConfigured()) {
         try {
           // 1. Call Onboard API route to create user in Auth and profiles table
+          const idToken = await auth.currentUser?.getIdToken();
+          if (!idToken) {
+            throw new Error('Your administrator session has expired. Please sign in again.');
+          }
           const res = await fetch('/api/admin/onboard', {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${idToken}`,
+            },
             body: JSON.stringify({
               name: name.trim(),
               phone: cleanPhone,

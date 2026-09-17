@@ -75,9 +75,27 @@ export function calculatePaymentSplit(
 }
 
 /**
+ * Recursively sanitize an object to remove `undefined` values,
+ * converting them to `null` so Firebase Firestore set/add/update never fails.
+ */
+function cleanFirestorePayload<T extends Record<string, any>>(obj: T): Record<string, any> {
+  const result: Record<string, any> = {};
+  for (const [key, value] of Object.entries(obj)) {
+    if (value === undefined) {
+      result[key] = null;
+    } else if (value !== null && typeof value === 'object' && !Array.isArray(value) && !(value instanceof Date)) {
+      result[key] = cleanFirestorePayload(value);
+    } else {
+      result[key] = value;
+    }
+  }
+  return result;
+}
+
+/**
  * Generate a unique receipt number using a Firestore transaction (atomic).
  */
-async function generateReceiptNumber(): Promise<string> {
+export async function generateReceiptNumber(): Promise<string> {
   const counterRef = doc(db, 'counters', 'receipt_number');
   const next = await runTransaction(db, async (transaction) => {
     const counterSnap = await transaction.get(counterRef);
@@ -90,33 +108,39 @@ async function generateReceiptNumber(): Promise<string> {
 }
 
 /**
- * Record a payment and update the associated loan balances.
- * Uses a Firestore batch write for atomicity — payment insert and loan update
- * either both succeed or both fail.
+ * Generate a unique loan release / closure voucher number using a Firestore transaction (atomic).
+ */
+export async function generateReleaseNumber(): Promise<string> {
+  const counterRef = doc(db, 'counters', 'release_number');
+  const next = await runTransaction(db, async (transaction) => {
+    const counterSnap = await transaction.get(counterRef);
+    const current = counterSnap.exists() ? (counterSnap.data().value || 0) : 0;
+    const nextVal = current + 1;
+    transaction.set(counterRef, { value: nextVal }, { merge: true });
+    return nextVal;
+  });
+  return `PGF-REL-${String(next).padStart(6, '0')}`;
+}
+
+/**
+ * Record a payment and update the associated loan balances in one Firestore
+ * transaction, preventing concurrent cashiers from overwriting running totals.
  */
 export async function recordPayment(data: PaymentInsert): Promise<Payment> {
-  // Validation: reject invalid payment amounts
-  if (!data.amount_paid || data.amount_paid <= 0) {
+  if (!Number.isFinite(data.amount_paid) || data.amount_paid <= 0) {
     throw new Error('Payment amount must be greater than zero.');
   }
-  if (data.interest_portion < 0 || data.principal_portion < 0) {
+  if (!Number.isFinite(data.interest_portion) || !Number.isFinite(data.principal_portion) || data.interest_portion < 0 || data.principal_portion < 0) {
     throw new Error('Payment portions cannot be negative.');
   }
-
-  // Validation: check loan exists and is in a payable state
-  const loanCheckRef = doc(db, 'loans', data.loan_id);
-  const loanCheckSnap = await getDoc(loanCheckRef);
-  if (!loanCheckSnap.exists()) {
-    throw new Error('Loan not found. Cannot record payment.');
+  const penaltyAmount = data.penalty_amount || 0;
+  const waiverAmount = data.waiver_amount || 0;
+  if (!Number.isFinite(penaltyAmount) || !Number.isFinite(waiverAmount) || penaltyAmount < 0 || waiverAmount < 0) {
+    throw new Error('Penalty and waiver amounts cannot be negative.');
   }
-  const loanCheckData = loanCheckSnap.data();
-  if (['Settled', 'Cancelled', 'Auctioned'].includes(loanCheckData.status)) {
-    throw new Error(`Cannot record payment on a ${loanCheckData.status} loan.`);
-  }
-
-  // Auto-generate receipt number atomically
-  if (!data.receipt_number) {
-    data.receipt_number = await generateReceiptNumber();
+  const toPaise = (amount: number) => Math.round(amount * 100);
+  if (toPaise(data.interest_portion) + toPaise(data.principal_portion) + toPaise(penaltyAmount) !== toPaise(data.amount_paid)) {
+    throw new Error('Payment allocation must equal the amount received.');
   }
 
   // Assign rotating Tamil slogan for bill/receipt
@@ -132,52 +156,67 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
     }
   }
 
-  const now = new Date().toISOString();
-  const paymentData = {
-    ...data,
-    slogan_id: sloganId || null,
-    slogan_text: sloganText || null,
-    payment_date: data.payment_date || now,
-    created_at: now,
-  };
-
-  // Fetch loan data for balance update calculation
   const loanRef = doc(db, 'loans', data.loan_id);
-  const loanSnap = await getDoc(loanRef);
-
-  // Create payment ref for batch
   const paymentRef = doc(collection(db, COLLECTION));
-  const batch = writeBatch(db);
-
-  // 1. Insert payment record
-  batch.set(paymentRef, paymentData);
-
-  // 2. Update loan running totals atomically in the same batch
-  if (loanSnap.exists()) {
+  const counterRef = doc(db, 'counters', 'receipt_number');
+  const now = new Date().toISOString();
+  const paymentData = await runTransaction(db, async (transaction) => {
+    const loanSnap = await transaction.get(loanRef);
+    if (!loanSnap.exists()) throw new Error('Loan not found. Cannot record payment.');
     const loan = loanSnap.data();
-    const newTotalInterestPaid = (loan.total_interest_paid || 0) + data.interest_portion;
-    const newTotalPrincipalPaid = (loan.total_principal_paid || 0) + data.principal_portion;
-    const newOutstandingInterest = Math.max(0, (loan.outstanding_interest || 0) - data.interest_portion);
-    const remainingPrincipal = (loan.principal_amount || 0) - newTotalPrincipalPaid;
+    if (['Settled', 'Cancelled', 'Auctioned'].includes(loan.status)) {
+      throw new Error(`Cannot record payment on a ${loan.status} loan.`);
+    }
 
+    const totalPrincipalPaid = loan.total_principal_paid || 0;
+    const remainingPrincipal = Math.max(0, (loan.principal_amount || 0) - totalPrincipalPaid);
+    const outstandingInterest = Math.max(0, loan.outstanding_interest || 0);
+    if (toPaise(data.principal_portion) > toPaise(remainingPrincipal)) {
+      throw new Error('Principal payment exceeds the remaining principal balance.');
+    }
+    if (toPaise(data.interest_portion + waiverAmount) > toPaise(outstandingInterest)) {
+      throw new Error('Interest payment and waiver exceed the outstanding interest balance.');
+    }
+
+    let receiptNumber = data.receipt_number;
+    if (!receiptNumber) {
+      const counterSnap = await transaction.get(counterRef);
+      const next = (counterSnap.exists() ? (counterSnap.data().value || 0) : 0) + 1;
+      transaction.set(counterRef, { value: next }, { merge: true });
+      receiptNumber = `PGF-REC-${String(next).padStart(6, '0')}`;
+    }
+
+    const savedPayment = cleanFirestorePayload({
+      ...data,
+      receipt_number: receiptNumber,
+      penalty_amount: penaltyAmount,
+      waiver_amount: waiverAmount,
+      interest_period_from: data.interest_period_from || null,
+      interest_period_to: data.interest_period_to || null,
+      release_number: data.release_number || null,
+      transaction_ref: data.transaction_ref || null,
+      slogan_id: sloganId || null,
+      slogan_text: sloganText || null,
+      payment_date: data.payment_date || now,
+      created_at: now,
+    });
+    const newOutstandingInterest = Math.max(0, outstandingInterest - data.interest_portion - waiverAmount);
+    const newTotalPrincipalPaid = totalPrincipalPaid + data.principal_portion;
+    const newRemainingPrincipal = Math.max(0, (loan.principal_amount || 0) - newTotalPrincipalPaid);
     const loanUpdate: Record<string, unknown> = {
-      total_interest_paid: newTotalInterestPaid,
+      total_interest_paid: (loan.total_interest_paid || 0) + data.interest_portion,
       total_principal_paid: newTotalPrincipalPaid,
       outstanding_interest: newOutstandingInterest,
       updated_at: now,
     };
-
-    // Auto-settle loan if fully paid
-    if (remainingPrincipal <= 0 && newOutstandingInterest <= 0) {
+    if (newRemainingPrincipal === 0 && newOutstandingInterest === 0) {
       loanUpdate.status = 'Settled';
       loanUpdate.closed_at = now;
     }
-
-    batch.update(loanRef, loanUpdate);
-  }
-
-  // Commit atomically — both payment and loan update succeed or fail together
-  await batch.commit();
+    transaction.set(paymentRef, savedPayment);
+    transaction.update(loanRef, cleanFirestorePayload(loanUpdate));
+    return savedPayment;
+  });
 
   const payment = { id: paymentRef.id, ...paymentData } as unknown as Payment;
 
@@ -191,6 +230,200 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
   }
 
   return payment;
+}
+
+/**
+ * Record an interest-only payment for an arbitrary period (e.g. 7 days, 20 days, monthly, 6 months).
+ */
+export async function recordInterestPayment(data: {
+  loan_id: string;
+  customer_id?: string;
+  amount_paid: number;
+  interest_period_from: string;
+  interest_period_to: string;
+  mode: PaymentMode;
+  transaction_ref?: string;
+  remarks?: string;
+  payment_date?: string;
+  receipt_number?: string;
+}): Promise<Payment> {
+  return recordPayment({
+    loan_id: data.loan_id,
+    customer_id: data.customer_id,
+    amount_paid: data.amount_paid,
+    interest_portion: data.amount_paid,
+    principal_portion: 0,
+    payment_type: 'Interest',
+    mode: data.mode,
+    interest_period_from: data.interest_period_from,
+    interest_period_to: data.interest_period_to,
+    transaction_ref: data.transaction_ref || null,
+    remarks: data.remarks || `Interest payment covering ${data.interest_period_from} to ${data.interest_period_to}`,
+    payment_date: data.payment_date,
+    receipt_number: data.receipt_number,
+  });
+}
+
+/**
+ * Record a principal-only repayment (reduces loan principal directly).
+ */
+export async function recordPrincipalPayment(data: {
+  loan_id: string;
+  customer_id?: string;
+  amount_paid: number;
+  mode: PaymentMode;
+  transaction_ref?: string;
+  remarks?: string;
+  payment_date?: string;
+  receipt_number?: string;
+}): Promise<Payment> {
+  return recordPayment({
+    loan_id: data.loan_id,
+    customer_id: data.customer_id,
+    amount_paid: data.amount_paid,
+    interest_portion: 0,
+    principal_portion: data.amount_paid,
+    payment_type: 'Principal',
+    mode: data.mode,
+    transaction_ref: data.transaction_ref || null,
+    remarks: data.remarks || 'Principal repayment reduction',
+    payment_date: data.payment_date,
+    receipt_number: data.receipt_number,
+  });
+}
+
+/**
+ * Process a full loan release / closure.
+ * Atomically:
+ * 1. Generates unique PGF-REL-XXXXXX voucher number.
+ * 2. Inserts final settlement payment record.
+ * 3. Sets loan status to 'Settled', outstanding_interest=0, closed_at=release_date.
+ * 4. Updates all gold collateral ornaments custody to 'Released to Customer' and status='Released'.
+ */
+export async function recordLoanRelease(data: {
+  loan_id: string;
+  customer_id?: string;
+  release_date: string;
+  final_amount_paid: number;
+  interest_portion: number;
+  principal_portion: number;
+  penalty_amount?: number;
+  waiver_amount?: number;
+  mode: PaymentMode;
+  transaction_ref?: string;
+  remarks?: string;
+  release_number?: string;
+  actor?: { id: string; name: string; role: string };
+}): Promise<{ payment: Payment; release_number: string; loan: any }> {
+  const loanRef = doc(db, 'loans', data.loan_id);
+  const loanSnap = await getDoc(loanRef);
+  if (!loanSnap.exists()) {
+    throw new Error('Loan not found. Cannot perform gold release.');
+  }
+
+  const loan = loanSnap.data();
+  if (['Settled', 'Cancelled', 'Auctioned'].includes(loan.status)) {
+    throw new Error(`Loan is already ${loan.status}.`);
+  }
+
+  // Generate unique atomic Release Voucher Number & Receipt Number
+  const releaseNumber = data.release_number || (await generateReleaseNumber());
+  const receiptNumber = await generateReceiptNumber();
+
+  // Assign rotating Tamil slogan
+  let sloganId: string | null = null;
+  let sloganText: string | null = null;
+  try {
+    const assigned = await getNextBillSlogan();
+    sloganId = assigned.sloganId;
+    sloganText = assigned.sloganText;
+  } catch (sloganErr) {
+    console.warn('Slogan assignment notice:', sloganErr);
+  }
+
+  const now = new Date().toISOString();
+  const effectiveReleaseDate = data.release_date || now;
+
+  // Fetch all gold collateral items for this loan
+  const goldQ = query(collection(db, 'gold_collateral'), where('loan_id', '==', data.loan_id));
+  const goldSnap = await getDocs(goldQ);
+
+  const batch = writeBatch(db);
+  const paymentRef = doc(collection(db, COLLECTION));
+
+  // 1. Final payment record
+  const paymentData = cleanFirestorePayload({
+    loan_id: data.loan_id,
+    customer_id: data.customer_id || loan.customer_id,
+    amount_paid: data.final_amount_paid,
+    interest_portion: data.interest_portion,
+    principal_portion: data.principal_portion,
+    penalty_amount: data.penalty_amount || 0,
+    waiver_amount: data.waiver_amount || 0,
+    payment_type: 'Full_Settlement',
+    mode: data.mode,
+    receipt_number: receiptNumber,
+    release_number: releaseNumber,
+    transaction_ref: data.transaction_ref || null,
+    remarks: data.remarks || `Full settlement and gold collateral release under Voucher ${releaseNumber}`,
+    payment_date: effectiveReleaseDate,
+    slogan_id: sloganId,
+    slogan_text: sloganText,
+    created_at: now,
+  });
+  batch.set(paymentRef, paymentData);
+
+  // 2. Update loan record: marked closed with zero outstanding
+  const updatedTotalInterest = (loan.total_interest_paid || 0) + data.interest_portion;
+  const loanUpdate = cleanFirestorePayload({
+    status: 'Settled',
+    closed_at: effectiveReleaseDate,
+    release_date: effectiveReleaseDate,
+    release_number: releaseNumber,
+    total_principal_paid: loan.principal_amount || 0,
+    total_interest_paid: updatedTotalInterest,
+    outstanding_interest: 0,
+    updated_at: now,
+  });
+  batch.update(loanRef, loanUpdate);
+
+  // 3. Mark all pledged gold items as released back to customer
+  for (const gDoc of goldSnap.docs) {
+    batch.update(gDoc.ref, cleanFirestorePayload({
+      custody_location: 'Released to Customer',
+      status: 'Released',
+      released_at: effectiveReleaseDate,
+      release_number: releaseNumber,
+      updated_at: now,
+    }));
+  }
+
+  await batch.commit();
+
+  const paymentRecord = { id: paymentRef.id, ...paymentData } as unknown as Payment;
+
+  // 4. Audit Log
+  try {
+    const actorId = data.actor?.id || 'admin';
+    const actorName = data.actor?.name || 'Authorized Officer';
+    const actorRole = data.actor?.role || 'Admin';
+
+    await addDoc(collection(db, 'audit_logs'), {
+      actor_id: actorId,
+      actor_name: actorName,
+      actor_role: actorRole,
+      action_type: 'Loan Closed & Gold Released',
+      affected_entity: 'loans',
+      affected_entity_id: data.loan_id,
+      old_state: { status: loan.status, principal_amount: loan.principal_amount },
+      new_state: { status: 'Settled', release_number: releaseNumber, release_date: effectiveReleaseDate },
+      timestamp: now,
+    });
+  } catch (auditErr) {
+    console.warn('Audit logging notice:', auditErr);
+  }
+
+  return { payment: paymentRecord, release_number: releaseNumber, loan: { ...loan, ...loanUpdate } };
 }
 
 /**

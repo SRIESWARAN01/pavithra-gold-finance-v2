@@ -282,6 +282,8 @@ export interface Loan {
   maturity_date: string | null;
   grace_expiry_date: string | null;
   closed_at: string | null;
+  release_number?: string | null;
+  release_date?: string | null;
   cancelled_at: string | null;
   cancelled_reason: string | null;
   notes: string | null;
@@ -332,6 +334,8 @@ export interface LoanUpdate {
   outstanding_interest?: number;
   last_interest_calc_date?: string;
   closed_at?: string;
+  release_number?: string | null;
+  release_date?: string | null;
   cancelled_at?: string;
   cancelled_reason?: string;
   notes?: string;
@@ -416,6 +420,10 @@ export interface Payment {
   waiver_amount: number;
   payment_type: PaymentType;
   payment_date: string;
+  interest_period_from?: string | null;
+  interest_period_to?: string | null;
+  release_number?: string | null;
+  transaction_ref?: string | null;
   mode: PaymentMode;
   receipt_number: string | null;
   receipt_pdf_url: string | null;
@@ -440,6 +448,10 @@ export interface PaymentInsert {
   mode: PaymentMode;
   receipt_number?: string;
   receipt_pdf_url?: string;
+  interest_period_from?: string | null;
+  interest_period_to?: string | null;
+  release_number?: string | null;
+  transaction_ref?: string | null;
   remarks?: string;
   payment_date?: string;
   slogan_id?: string;
