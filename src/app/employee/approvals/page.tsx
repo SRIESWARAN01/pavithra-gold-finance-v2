@@ -45,6 +45,19 @@ export default function ApprovalsQueuePage() {
     setTimeout(() => setToastMessage(null), 4000);
   };
 
+  const loadHistory = async () => {
+    try {
+      const snap = await getDocs(collection(db, 'approval_requests'));
+      const list = snap.docs
+        .map((d) => ({ id: d.id, ...d.data() } as ApprovalRequest))
+        .filter((r) => r.status === 'Approved' || r.status === 'Rejected');
+      list.sort((a, b) => (b.reviewed_at || '').localeCompare(a.reviewed_at || ''));
+      setHistoryRequests(list);
+    } catch (err) {
+      console.error('Error loading approval history:', err);
+    }
+  };
+
   useEffect(() => {
     let unsubPending: (() => void) | undefined;
 
@@ -76,19 +89,6 @@ export default function ApprovalsQueuePage() {
       if (unsubPending) unsubPending();
     };
   }, []);
-
-  const loadHistory = async () => {
-    try {
-      const snap = await getDocs(collection(db, 'approval_requests'));
-      const list = snap.docs
-        .map((d) => ({ id: d.id, ...d.data() } as ApprovalRequest))
-        .filter((r) => r.status === 'Approved' || r.status === 'Rejected');
-      list.sort((a, b) => (b.reviewed_at || '').localeCompare(a.reviewed_at || ''));
-      setHistoryRequests(list);
-    } catch (err) {
-      console.error('Error loading approval history:', err);
-    }
-  };
 
   const handleDecision = async (requestId: string, decision: 'Approved' | 'Rejected') => {
     if (!profile) {

@@ -91,8 +91,8 @@ export default function BranchManagement() {
         let activeLoans = 0;
         let totalPrincipal = 0;
         let totalCollection = 0;
-        let goldWeight = 0;
-        let goldValue = 0;
+        const goldWeight = 0;
+        const goldValue = 0;
 
         for (const loan of branchLoans) {
           if (['Active', 'Due', 'Overdue', 'Grace_Period'].includes(loan.status)) {

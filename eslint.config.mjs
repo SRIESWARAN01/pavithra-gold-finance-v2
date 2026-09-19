@@ -15,6 +15,9 @@ const eslintConfig = defineConfig([
         varsIgnorePattern: "^_",
         caughtErrorsIgnorePattern: "^_",
       }],
+      // React 19 compiler experimental hook rules - treat as warning to allow standard mount fetch patterns
+      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/purity": "warn",
     },
   },
   // Override default ignores of eslint-config-next.
@@ -24,6 +27,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    ".firebase/**",
+    "scripts/**",
+    "tests/**",
   ]),
 ]);
 

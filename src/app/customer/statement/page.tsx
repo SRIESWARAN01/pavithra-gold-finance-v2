@@ -63,6 +63,12 @@ export default function CustomerStatementPage() {
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
+  const triggerSyncPulse = () => {
+    setLastSyncTime(new Date());
+    setJustUpdated(true);
+    setTimeout(() => setJustUpdated(false), 2500);
+  };
+
   // 1. Authenticate & Setup Live Firestore Listeners
   useEffect(() => {
     let unsubProfile: (() => void) | undefined;
@@ -173,12 +179,6 @@ export default function CustomerStatementPage() {
       if (unsubGold) unsubGold();
     };
   }, [router, targetCustIdFromUrl, targetLoanIdFromUrl]);
-
-  const triggerSyncPulse = () => {
-    setLastSyncTime(new Date());
-    setJustUpdated(true);
-    setTimeout(() => setJustUpdated(false), 2500);
-  };
 
   // Selected Loan Object (or null for Consolidated)
   const currentLoan = useMemo(() => {

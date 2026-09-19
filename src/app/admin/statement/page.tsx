@@ -102,11 +102,6 @@ function AdminLiveStatementContent() {
   useEffect(() => {
     if (!selectedCustomerId) return;
 
-    let unsubProfile: (() => void) | undefined;
-    let unsubLoans: (() => void) | undefined;
-    let unsubPayments: (() => void) | undefined;
-    let unsubGold: (() => void) | undefined;
-
     const triggerSyncPulse = () => {
       setLastSyncTime(new Date());
       setJustUpdated(true);
@@ -114,7 +109,7 @@ function AdminLiveStatementContent() {
     };
 
     // A. Real-time Profile Listener
-    unsubProfile = onSnapshot(doc(db, 'profiles', selectedCustomerId), (snap) => {
+    const unsubProfile = onSnapshot(doc(db, 'profiles', selectedCustomerId), (snap) => {
       if (snap.exists()) {
         setCustomer({ id: snap.id, ...snap.data() });
         triggerSyncPulse();
@@ -126,7 +121,7 @@ function AdminLiveStatementContent() {
       collection(db, 'loans'),
       where('customer_id', '==', selectedCustomerId)
     );
-    unsubLoans = onSnapshot(loansQuery, (snap) => {
+    const unsubLoans = onSnapshot(loansQuery, (snap) => {
       const loadedLoans: any[] = [];
       snap.forEach((d) => {
         loadedLoans.push({ id: d.id, ...d.data() });
@@ -150,7 +145,7 @@ function AdminLiveStatementContent() {
       collection(db, 'payments'),
       where('customer_id', '==', selectedCustomerId)
     );
-    unsubPayments = onSnapshot(paymentsQuery, (snap) => {
+    const unsubPayments = onSnapshot(paymentsQuery, (snap) => {
       const loadedPmts: any[] = [];
       snap.forEach((d) => {
         loadedPmts.push({ id: d.id, ...d.data() });
@@ -165,7 +160,7 @@ function AdminLiveStatementContent() {
       collection(db, 'gold_collateral'),
       where('customer_id', '==', selectedCustomerId)
     );
-    unsubGold = onSnapshot(goldQuery, (snap) => {
+    const unsubGold = onSnapshot(goldQuery, (snap) => {
       const loadedGold: any[] = [];
       snap.forEach((d) => {
         loadedGold.push({ id: d.id, ...d.data() });

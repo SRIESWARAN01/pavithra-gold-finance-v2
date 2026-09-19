@@ -515,7 +515,7 @@ export default function RecordRepaymentModal({
                 {allocation.isFullSettlement && (
                   <div className="p-2 bg-emerald-100 text-emerald-900 text-xs font-bold rounded-lg flex items-center gap-1.5">
                     <CheckCircle2 className="w-4 h-4 text-emerald-700" />
-                    Full Loan Settlement: Account will be marked as 'Settled' upon submission.
+                    Full Loan Settlement: Account will be marked as &apos;Settled&apos; upon submission.
                   </div>
                 )}
               </div>

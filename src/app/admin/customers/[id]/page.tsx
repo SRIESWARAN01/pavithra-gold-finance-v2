@@ -1364,7 +1364,7 @@ export default function CustomerProfileDetail() {
                       <div className="flex-1 space-y-1">
                         <div className="flex justify-between items-center">
                           <strong className="text-gray-900 text-xs">{n.title}</strong>
-                          <span className="text-[10px] text-gray-400">{new Date(n.sent_at || (n as any).created_at || Date.now()).toLocaleString('en-IN')}</span>
+                          <span className="text-[10px] text-gray-400">{(n.sent_at || (n as any).created_at) ? new Date(n.sent_at || (n as any).created_at).toLocaleString('en-IN') : 'Recent'}</span>
                         </div>
                         <p className="text-gray-600 text-[11px] leading-relaxed">{n.message}</p>
                         <div className="flex items-center gap-2 pt-1">

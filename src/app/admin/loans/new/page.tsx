@@ -708,7 +708,7 @@ function NewLoanWizardContent() {
                 <Coins size={20} />
               </div>
               <div>
-                <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block">Today's Gold Market Rate ₹ / gram (22K Benchmark)</span>
+                <span className="text-[10px] text-amber-800 font-bold uppercase tracking-wider block">Today&apos;s Gold Market Rate ₹ / gram (22K Benchmark)</span>
                 <span className="text-base font-bold text-gray-900">
                   {typeof globalGoldRate === 'number' && globalGoldRate > 0
                     ? `₹ ${globalGoldRate.toLocaleString('en-IN')} / gram (22K Benchmark)`
