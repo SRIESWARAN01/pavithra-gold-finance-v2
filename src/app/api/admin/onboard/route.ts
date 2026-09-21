@@ -82,14 +82,27 @@ export async function POST(request: Request) {
     // 3. Create the Firebase Authentication account with the Admin SDK.
     const cleanedPhone = phone.trim().replace('+91', '');
     const authEmail = email || `${cleanedPhone}@pgf.local`;
-    const userRecord = await adminAuth.createUser({
-      email: authEmail,
-      password,
-      displayName: name,
-      phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
-    });
-    const tempUid = userRecord.uid;
-    await adminAuth.setCustomUserClaims(tempUid, { role: userRole });
+    let tempUid: string;
+    try {
+      const userRecord = await adminAuth.createUser({
+        email: authEmail,
+        password,
+        displayName: name,
+        phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
+      });
+      tempUid = userRecord.uid;
+      await adminAuth.setCustomUserClaims(tempUid, { role: userRole });
+    } catch (authErr: any) {
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        (authErr.message?.includes('Could not load the default credentials') || authErr.message?.includes('default credentials'))
+      ) {
+        console.warn('[CustomerOnboard] ⚠️ Missing default credentials in dev mode. Generating deterministic UID.');
+        tempUid = `cust_${cleanedPhone}`;
+      } else {
+        throw authErr;
+      }
+    }
 
     // 4. Create customer profile in Firestore with dual Customer ID format
     const profile = await createProfile({

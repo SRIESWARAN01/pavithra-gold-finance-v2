@@ -59,20 +59,40 @@ export async function POST(request: Request) {
     }
 
     // Check duplicate phone in profiles
-    const existingProfSnap = await adminDb
-      .collection('profiles')
-      .where('phone_primary', '==', cleanedPhone)
-      .limit(1)
-      .get();
+    try {
+      const existingProfSnap = await adminDb
+        .collection('profiles')
+        .where('phone_primary', '==', cleanedPhone)
+        .limit(1)
+        .get();
 
-    if (!existingProfSnap.empty) {
-      const existing = existingProfSnap.docs[0].data();
-      return NextResponse.json(
-        {
-          error: `An account with mobile number ${cleanedPhone} already exists (${existing.name}, Role: ${existing.role}).`,
-        },
-        { status: 409 }
-      );
+      if (!existingProfSnap.empty) {
+        const existing = existingProfSnap.docs[0].data();
+        return NextResponse.json(
+          {
+            error: `An account with mobile number ${cleanedPhone} already exists (${existing.name}, Role: ${existing.role}).`,
+          },
+          { status: 409 }
+        );
+      }
+    } catch (dbErr: any) {
+      if (dbErr.message?.includes('Could not load the default credentials') || dbErr.message?.includes('default credentials')) {
+        const { db } = await import('@/lib/firebase');
+        const { collection, query, where, getDocs, limit } = await import('firebase/firestore');
+        const q = query(collection(db, 'profiles'), where('phone_primary', '==', cleanedPhone), limit(1));
+        const snap = await getDocs(q);
+        if (!snap.empty) {
+          const existing = snap.docs[0].data();
+          return NextResponse.json(
+            {
+              error: `An account with mobile number ${cleanedPhone} already exists (${existing.name}, Role: ${existing.role}).`,
+            },
+            { status: 409 }
+          );
+        }
+      } else {
+        throw dbErr;
+      }
     }
 
     // 1. Generate unique Investor ID
@@ -80,17 +100,28 @@ export async function POST(request: Request) {
 
     // 2. Create Firebase Auth user
     const authEmail = email ? email.trim() : `${cleanedPhone}@pgf.local`;
-    const userRecord = await adminAuth.createUser({
-      email: authEmail,
-      password: password.trim(),
-      displayName: name.trim(),
-      phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
-    });
+    let uid: string;
+    try {
+      const userRecord = await adminAuth.createUser({
+        email: authEmail,
+        password: password.trim(),
+        displayName: name.trim(),
+        phoneNumber: phone.startsWith('+') ? phone : `+91${cleanedPhone}`,
+      });
 
-    const uid = userRecord.uid;
-
-    // 3. Set custom claims for Investor role
-    await adminAuth.setCustomUserClaims(uid, { role: 'Investor' as UserRole });
+      uid = userRecord.uid;
+      await adminAuth.setCustomUserClaims(uid, { role: 'Investor' as UserRole });
+    } catch (authErr: any) {
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        (authErr.message?.includes('Could not load the default credentials') || authErr.message?.includes('default credentials'))
+      ) {
+        console.warn('[InvestorCreate] ⚠️ Missing default credentials in dev mode. Generating deterministic UID.');
+        uid = `inv_${cleanedPhone}`;
+      } else {
+        throw authErr;
+      }
+    }
 
     const now = new Date().toISOString();
 
@@ -114,8 +145,6 @@ export async function POST(request: Request) {
       updated_at: now,
     };
 
-    await adminDb.collection('profiles').doc(uid).set(profileData);
-
     // 5. Initialize Investment Account
     const initialAccount: InvestmentAccount = {
       id: uid,
@@ -131,7 +160,22 @@ export async function POST(request: Request) {
       updated_at: now,
     };
 
-    await adminDb.collection('investment_accounts').doc(uid).set(initialAccount);
+    try {
+      await adminDb.collection('profiles').doc(uid).set(profileData);
+      await adminDb.collection('investment_accounts').doc(uid).set(initialAccount);
+    } catch (dbErr: any) {
+      if (
+        process.env.NODE_ENV !== 'production' &&
+        (dbErr.message?.includes('Could not load the default credentials') || dbErr.message?.includes('default credentials'))
+      ) {
+        const { db } = await import('@/lib/firebase');
+        const { doc, setDoc } = await import('firebase/firestore');
+        await setDoc(doc(db, 'profiles', uid), profileData);
+        await setDoc(doc(db, 'investment_accounts', uid), initialAccount);
+      } else {
+        throw dbErr;
+      }
+    }
 
     // 6. Log Audit
     await logInvestmentAudit({
