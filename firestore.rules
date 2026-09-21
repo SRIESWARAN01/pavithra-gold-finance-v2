@@ -231,23 +231,30 @@ service cloud.firestore {
     }
 
     match /investment_accounts/{accountId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow write: if isStaff();
     }
 
     match /investment_lots/{lotId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow write: if isStaff();
     }
 
     match /investment_transactions/{txnId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow write: if isStaff();
     }
 
     match /withdrawal_requests/{wdrId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow create: if isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid);
+      allow update, delete: if isStaff();
     }
 
     match /investment_payment_requests/{reqId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow create: if isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid);
+      allow update, delete: if isStaff();
     }
 
     match /investment_settings/{settingId} {
