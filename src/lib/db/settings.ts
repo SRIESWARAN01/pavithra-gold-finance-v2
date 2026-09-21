@@ -149,7 +149,7 @@ export async function getAppConfig(): Promise<{
     companySealUrl: map.get('company_seal_url') || '',
     defaultInterestRate: parseFloat(map.get('default_interest_rate') || '12'),
     maxLoanPeriod: parseInt(map.get('max_loan_period_months') || '12'),
-    ltvPercentage: parseInt(map.get('ltv_percentage') || '100'),
+    ltvPercentage: parseInt(map.get('ltv_percentage') || '75'),
     currentGoldRate: parseFloat(map.get('current_gold_rate') || '5400'),
     purityOptions: (map.get('purity_options') || '18K,22K,24K').split(','),
     smsEnabled: map.get('sms_enabled') === 'true',

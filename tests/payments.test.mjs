@@ -21,7 +21,8 @@ function calculatePaymentSplit(
   const afterPenalty = Math.max(0, amount - penaltyAmount);
   const effectiveOutstandingInterest = Math.max(0, outstandingInterest - waiverAmount);
   const interestPortion = Math.min(afterPenalty, effectiveOutstandingInterest);
-  const principalPortion = Math.max(0, afterPenalty - interestPortion);
+  const excess = Math.max(0, afterPenalty - interestPortion);
+  const principalPortion = Math.min(excess, remainingPrincipal);
 
   const newRemainingPrincipal = Math.max(0, remainingPrincipal - principalPortion);
   const newRemainingInterest = Math.max(0, effectiveOutstandingInterest - interestPortion);
@@ -276,3 +277,99 @@ test('Test Case 8: Collateral Release Custody Lock (Cannot release if at bank)',
   }, /CUSTODY_LOCK/);
 });
 
+// -----------------------------------------------------------------------------
+// Edge Case: Zero payment amount must be rejected
+// -----------------------------------------------------------------------------
+test('Payment Validation: rejects zero amount payment', () => {
+  const loan = { principal_amount: 50000, total_principal_paid: 0, outstanding_interest: 1000, status: 'Active' };
+  assert.throws(() => {
+    validatePaymentAllocation({
+      amount_paid: 0,
+      interest_portion: 0,
+      principal_portion: 0,
+    }, loan);
+  }, /Payment amount must be greater than zero/);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: NaN and Infinity amounts must be rejected
+// -----------------------------------------------------------------------------
+test('Payment Validation: rejects NaN and Infinity amounts', () => {
+  const loan = { principal_amount: 50000, total_principal_paid: 0, outstanding_interest: 1000, status: 'Active' };
+  assert.throws(() => {
+    validatePaymentAllocation({
+      amount_paid: NaN,
+      interest_portion: 0,
+      principal_portion: 0,
+    }, loan);
+  }, /Payment amount must be greater than zero/);
+
+  assert.throws(() => {
+    validatePaymentAllocation({
+      amount_paid: Infinity,
+      interest_portion: 0,
+      principal_portion: 0,
+    }, loan);
+  }, /Payment amount must be greater than zero/);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Negative payment amount clamps to zero and is rejected
+// -----------------------------------------------------------------------------
+test('Payment Split: negative amount clamps to zero', () => {
+  const split = calculatePaymentSplit(-500, 1000, 50000, 0, 0);
+  assert.strictEqual(split.totalAmount, 0);
+  assert.strictEqual(split.interestPortion, 0);
+  assert.strictEqual(split.principalPortion, 0);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Overpayment capped at total outstanding
+// -----------------------------------------------------------------------------
+test('Payment Split: overpayment beyond total outstanding caps at balances', () => {
+  const split = calculatePaymentSplit(
+    100000,  // amount far exceeds outstanding
+    1000,    // interest
+    50000,   // principal
+    0, 0
+  );
+  assert.strictEqual(split.interestPortion, 1000);
+  assert.strictEqual(split.principalPortion, 50000);
+  assert.strictEqual(split.remainingPrincipal, 0);
+  assert.strictEqual(split.remainingInterest, 0);
+  assert.strictEqual(split.isFullSettlement, true);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Exact settlement — payment matches total outstanding exactly
+// -----------------------------------------------------------------------------
+test('Payment Split: exact settlement matches total outstanding', () => {
+  const split = calculatePaymentSplit(
+    51000,   // exactly interest + principal
+    1000,
+    50000,
+    0, 0
+  );
+  assert.strictEqual(split.interestPortion, 1000);
+  assert.strictEqual(split.principalPortion, 50000);
+  assert.strictEqual(split.remainingPrincipal, 0);
+  assert.strictEqual(split.remainingInterest, 0);
+  assert.strictEqual(split.isFullSettlement, true);
+  assert.strictEqual(split.newOutstanding, 0);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Paise precision — fractional amounts don't drift
+// -----------------------------------------------------------------------------
+test('Payment Split: paise precision with fractional amounts', () => {
+  const split = calculatePaymentSplit(
+    1000.50,   // ₹1000.50
+    333.33,    // ₹333.33 interest
+    50000,     // principal
+    0, 0
+  );
+  assert.strictEqual(split.interestPortion, 333.33);
+  assert.strictEqual(split.principalPortion, 667.17);
+  assert.strictEqual(split.remainingInterest, 0);
+  assert.strictEqual(split.remainingPrincipal, 49332.83);
+});

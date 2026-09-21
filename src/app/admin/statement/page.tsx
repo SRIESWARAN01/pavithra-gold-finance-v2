@@ -43,6 +43,7 @@ import {
 import PDFPreviewModal from '@/components/PDFPreviewModal';
 import RecordRepaymentModal from '@/components/RecordRepaymentModal';
 import { getPdfApiUrl, downloadPdfDocument } from '@/lib/pdfHelper';
+import { getNumericSetting } from '@/lib/db/settings';
 
 function AdminLiveStatementContent() {
   const router = useRouter();
@@ -53,6 +54,17 @@ function AdminLiveStatementContent() {
   const [loading, setLoading] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date>(new Date());
   const [justUpdated, setJustUpdated] = useState(false);
+  const [configuredLtv, setConfiguredLtv] = useState<number>(75);
+
+  useEffect(() => {
+    async function loadLtvSetting() {
+      try {
+        const ltv = await getNumericSetting('ltv_percentage', 75);
+        if (ltv > 0) setConfiguredLtv(ltv);
+      } catch {}
+    }
+    loadLtvSetting();
+  }, []);
 
   // Customer Search & Directory
   const [allCustomers, setAllCustomers] = useState<any[]>([]);
@@ -217,7 +229,7 @@ function AdminLiveStatementContent() {
       valuation: Math.round(valuation),
       purity: displayPurity,
       goldRate: avgGoldRate,
-      ltv: 100, // 100% LTV as required
+      ltv: configuredLtv,
     };
   }, [relevantGold]);
 

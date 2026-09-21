@@ -28,7 +28,8 @@ import {
   ShieldCheck,
   RefreshCw,
   Layers,
-  UserCheck
+  UserCheck,
+  TrendingUp
 } from 'lucide-react';
 import { auth } from '@/lib/firebase';
 import Logo from '@/components/Logo';
@@ -91,6 +92,20 @@ export default function Sidebar({ isOpen = false, onClose }: SidebarProps) {
         { name: 'Billing Engine', path: '/admin/billing', icon: Receipt },
         { name: 'Accounting ERP', path: '/admin/accounting', icon: BookOpen },
         { name: 'Reports Center', path: '/admin/reports', icon: BarChart3 },
+      ]
+    },
+    {
+      title: 'Investment Management',
+      items: [
+        { name: 'Investor Dashboard', path: '/admin/investments', icon: TrendingUp },
+        { name: 'Investor Directory', path: '/admin/investments/investors', icon: Users },
+        { name: 'Create Investor', path: '/admin/investments/investors/new', icon: UserCheck },
+        { name: 'Pending Payments', path: '/admin/investments/payments', icon: Receipt },
+        { name: 'Withdrawal Requests', path: '/admin/investments/withdrawals', icon: ShieldCheck },
+        { name: 'Transactions', path: '/admin/investments/transactions', icon: Coins },
+        { name: 'Investment Reports', path: '/admin/investments/reports', icon: BarChart3 },
+        { name: 'Investment Settings', path: '/admin/investments/settings', icon: Settings },
+        { name: 'Investment Audit', path: '/admin/investments/audit', icon: FileText },
       ]
     },
     {

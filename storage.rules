@@ -67,6 +67,18 @@ service firebase.storage {
       allow write: if isStaff();
     }
 
+    // Investor payment screenshots — staff full access, investor read/write own
+    match /investments/screenshots/{investorId}/{allPaths=**} {
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+    }
+
+    // Investor documents / KYC — staff full access, investor read/write own
+    match /investments/documents/{investorId}/{allPaths=**} {
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+    }
+
     // Company branding assets (logo, seal) — admins can write, anyone authenticated can read
     match /company/{allPaths=**} {
       allow read: if isAuthenticated();

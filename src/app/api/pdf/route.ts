@@ -54,17 +54,20 @@ async function authenticatePdfRequest(
 
   if (!token) {
     if (isDev && (process.env.DEV_BYPASS_PDF_AUTH === 'true' || process.env.TEST_ENV === 'true')) {
+      console.warn('[PDF Auth] ⚠️ DEV BYPASS active — skipping authentication. This MUST NOT be enabled in production.');
       return { uid: 'dev_admin', role: 'Admin' };
     }
     throw new Error('UNAUTHORIZED: Authentication is required to generate or download documents.');
   }
 
-  // Handle mock dev tokens in non-production environments
+  // Handle mock dev tokens in non-production environments only
   if (isDev) {
     if (token === 'test-dev-admin-token' || token === 'test-dev-token') {
+      console.warn('[PDF Auth] ⚠️ Dev mock token used — not valid in production.');
       return { uid: 'dev_admin', role: 'Admin' };
     }
     if (token === 'test-dev-customer-token') {
+      console.warn('[PDF Auth] ⚠️ Dev mock customer token used — not valid in production.');
       return { uid: 'cust_sample_123', role: 'Customer' };
     }
   }
@@ -102,6 +105,24 @@ function checkDocumentAccess(
 
   if (isStaff) {
     return; // Staff can generate all documents
+  }
+
+  if (caller.role === 'Investor') {
+    const allowedInvestorDocTypes = [
+      'investment_receipt', 'additional_investment_receipt',
+      'withdrawal_request', 'withdrawal_approval', 'withdrawal_settlement_receipt',
+      'investor_statement', 'portfolio_statement'
+    ];
+
+    if (!allowedInvestorDocTypes.includes(type)) {
+      throw new Error('FORBIDDEN: Investors are not permitted to access Gold Loan records, internal accounting ledgers or customer files.');
+    }
+
+    if (targetCustomerId && targetCustomerId !== caller.uid) {
+      throw new Error('FORBIDDEN: You do not have permission to view documents belonging to another investor.');
+    }
+
+    return;
   }
 
   if (caller.role === 'Customer') {
@@ -246,6 +267,11 @@ export async function GET(req: NextRequest) {
     const paymentId = searchParams.get('paymentId') || '';
     const customerId = searchParams.get('customerId') || '';
     const repledgeId = searchParams.get('repledgeId') || '';
+    const investorId = searchParams.get('investorId') || searchParams.get('id') || '';
+    const transactionId = searchParams.get('transactionId') || searchParams.get('id') || '';
+    const withdrawalId = searchParams.get('withdrawalId') || '';
+    const fromDate = searchParams.get('fromDate') || '';
+    const toDate = searchParams.get('toDate') || '';
     const isDownload = searchParams.get('download') === 'true';
     const customAmount = parseFloat(searchParams.get('amount') || '0');
     const format = searchParams.get('format') || 'a4';
@@ -256,6 +282,11 @@ export async function GET(req: NextRequest) {
       paymentId,
       customerId,
       repledgeId,
+      investorId,
+      transactionId,
+      withdrawalId,
+      fromDate,
+      toDate,
       download: isDownload,
       customAmount,
       format,
@@ -291,6 +322,7 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
   let companyBranchName = 'Madurai Main Hub';
   const companyBranchCode = 'MDU-01';
   const companyDescription = 'TAMIL NADU LICENSED PAWNBROKER & GOLD FINANCIER • GOVT REG: TN/MDU/PB/2022/894';
+  let configuredLtv = '75';
 
   try {
     const settingsSnap = await adminDb.collection('settings').get();
@@ -308,6 +340,7 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
         if (d.id === 'company_pan') companyPan = data.value;
         if (d.id === 'company_cin') companyCin = data.value;
         if (d.id === 'company_branch_name') companyBranchName = data.value;
+        if (d.id === 'ltv_percentage') configuredLtv = String(data.value);
       }
     });
 
@@ -519,6 +552,89 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
     }
   }
 
+  // Retrieve Investor Data, Transactions, and Withdrawals if investor document
+  let investorData: any = null;
+  let investmentTxnData: any = null;
+  let withdrawalData: any = null;
+  let investorAccountData: any = null;
+
+  const isInvestorDoc = [
+    'investment_receipt', 'additional_investment_receipt',
+    'withdrawal_request', 'withdrawal_approval', 'withdrawal_settlement_receipt',
+    'investor_statement', 'portfolio_statement'
+  ].includes(type);
+
+  if (isInvestorDoc) {
+    const invQueryVal = params.investorId || (caller?.role === 'Investor' ? caller.uid : null);
+    if (invQueryVal) {
+      try {
+        let iSnap = await adminDb.collection('investors').doc(invQueryVal).get();
+        if (!iSnap.exists) {
+          const qI = await adminDb.collection('investors').where('investorId', '==', invQueryVal).limit(1).get();
+          if (!qI.empty) iSnap = qI.docs[0];
+        }
+        if (iSnap.exists) {
+          investorData = { id: iSnap.id, ...iSnap.data() };
+        }
+      } catch (e) {
+        console.warn('[PDF] Error fetching investor:', e);
+      }
+    }
+
+    const txnQueryVal = params.transactionId || params.id;
+    if (txnQueryVal) {
+      try {
+        let tSnap = await adminDb.collection('investment_transactions').doc(txnQueryVal).get();
+        if (!tSnap.exists) {
+          const qT = await adminDb.collection('investment_transactions').where('transactionId', '==', txnQueryVal).limit(1).get();
+          if (!qT.empty) tSnap = qT.docs[0];
+        }
+        if (tSnap.exists) {
+          investmentTxnData = { id: tSnap.id, ...tSnap.data() };
+          if (!investorData && investmentTxnData.investorId) {
+            const qI = await adminDb.collection('investors').where('investorId', '==', investmentTxnData.investorId).limit(1).get();
+            if (!qI.empty) investorData = { id: qI.docs[0].id, ...qI.docs[0].data() };
+          }
+        }
+      } catch (e) {
+        console.warn('[PDF] Error fetching investment txn:', e);
+      }
+    }
+
+    const wdrQueryVal = params.withdrawalId || params.id;
+    if (wdrQueryVal) {
+      try {
+        let wSnap = await adminDb.collection('withdrawal_requests').doc(wdrQueryVal).get();
+        if (!wSnap.exists) {
+          const qW = await adminDb.collection('withdrawal_requests').where('withdrawalId', '==', wdrQueryVal).limit(1).get();
+          if (!qW.empty) wSnap = qW.docs[0];
+        }
+        if (wSnap.exists) {
+          withdrawalData = { id: wSnap.id, ...wSnap.data() };
+          if (!investorData && withdrawalData.investorId) {
+            const qI = await adminDb.collection('investors').where('investorId', '==', withdrawalData.investorId).limit(1).get();
+            if (!qI.empty) investorData = { id: qI.docs[0].id, ...qI.docs[0].data() };
+          }
+        }
+      } catch (e) {
+        console.warn('[PDF] Error fetching withdrawal:', e);
+      }
+    }
+
+    if (investorData?.investorId) {
+      try {
+        const accSnap = await adminDb.collection('investment_accounts').doc(investorData.investorId).get();
+        if (accSnap.exists) {
+          investorAccountData = accSnap.data();
+        }
+      } catch (e) {}
+    }
+
+    if (caller) {
+      checkDocumentAccess(caller, type, investorData?.uid);
+    }
+  }
+
   // Pre-load images using secure Admin Storage buffer retrieval (IMG-02)
   let logoUri: string | null = null;
   if (companyLogo) {
@@ -673,7 +789,7 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
           .text(`Monthly Interest Due: ${formatINR(((loanData?.principal_amount || 0) * (loanData?.interest_rate_apr || 18)) / 1200)}`, 311, curY + 46)
           .text(`Pledge Date: ${loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr}`, 311, curY + 58)
           .text(`Maturity Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : '12 Months'}`, 311, curY + 70)
-          .text(`Tenure: ${loanData?.tenure_months || 12} Months  |  LTV Cap: 100%  |  Vault Ref: ${goldItems[0]?.storage_bin_id || 'VAULT-TRAY-A1'}`, 311, curY + 82);
+          .text(`Tenure: ${loanData?.tenure_months || 12} Months  |  LTV Cap: ${configuredLtv}%  |  Vault Ref: ${goldItems[0]?.storage_bin_id || 'VAULT-TRAY-A1'}`, 311, curY + 82);
 
     curY += 108;
 
@@ -2111,6 +2227,223 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
     }
   }
 
+  // --------------------------------------------------------------------------
+  // 6. INVESTMENT CAPITAL RECEIPT (investment_receipt / additional_investment_receipt)
+  // --------------------------------------------------------------------------
+  if (type === 'investment_receipt' || type === 'additional_investment_receipt') {
+    drawStandardHeader(
+      'OFFICIAL INVESTMENT CAPITAL RECEIPT',
+      `TXN ID: ${investmentTxnData?.transactionId || 'PGF-INV-TXN'}`
+    );
+
+    let curY = 138;
+
+    // Investor & Investment Particulars (Two Columns)
+    docPdf.fillColor(lightCardBg).rect(36, curY, 255, 110).fill().strokeColor(borderGray).rect(36, curY, 255, 110).stroke();
+    docPdf.fillColor(lightCardBg).rect(303, curY, 255, 110).fill().strokeColor(borderGray).rect(303, curY, 255, 110).stroke();
+
+    // Left Column: Investor Profile
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('INVESTOR PARTICULARS', 44, curY + 8);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Name: ${investorData?.name || 'Authorized Investor'}`, 44, curY + 22)
+          .text(`Investor ID: ${investorData?.investorId || '—'}`, 44, curY + 34)
+          .text(`Mobile: ${investorData?.phone ? '+91 ' + investorData.phone : '—'}`, 44, curY + 46)
+          .text(`Email: ${investorData?.email || 'Not on file'}`, 44, curY + 58)
+          .text(`PAN: ${investorData?.pan || 'Not on file'}`, 44, curY + 70)
+          .text(`Address: ${investorData?.address?.street ? `${investorData.address.street}, ${investorData.address.city || ''}` : '—'}`, 44, curY + 82, { width: 240 });
+
+    // Right Column: Investment Terms & Plan
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('CAPITAL INVESTMENT TERMS', 311, curY + 8);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Investment Amount: ${formatINR(investmentTxnData?.amount || 0)}`, 311, curY + 22)
+          .text(`Transaction Type: ${investmentTxnData?.transactionType || 'Capital Investment'}`, 311, curY + 34)
+          .text(`Investment Date: ${investmentTxnData?.transactionDate || todayStr}`, 311, curY + 46)
+          .text(`Lot Reference: ${investmentTxnData?.lotId || 'LOT-PRIMARY'}`, 311, curY + 58)
+          .text(`Applicable Return Rate: 12% p.a. (Configured Plan)`, 311, curY + 70)
+          .text(`Compounding Frequency: Annual Compounding`, 311, curY + 82)
+          .text(`Posting Status: ${investmentTxnData?.status || 'Approved & Active'}`, 311, curY + 94);
+
+    curY += 122;
+
+    // Transaction & Settlement Breakdown
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 18).fill();
+    docPdf.fillColor('#ffffff').fontSize(7.5).font('Helvetica-Bold')
+          .text('PAYMENT VERIFICATION & ATOMIC SETTLEMENT REFERENCE', 44, curY + 5);
+
+    curY += 18;
+    docPdf.fillColor('#ffffff').rect(36, curY, 522, 60).fill().strokeColor(borderGray).rect(36, curY, 522, 60).stroke();
+
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Payment Mode: ${investmentTxnData?.paymentMode || 'UPI / QR Transfer'}`, 44, curY + 8)
+          .text(`Bank / UTR Reference: ${investmentTxnData?.utr || '—'}`, 44, curY + 20)
+          .text(`Approval Timestamp: ${investmentTxnData?.createdAt || todayStr}`, 44, curY + 32)
+          .text(`Approved By: ${investmentTxnData?.approvedBy || 'Managing Director / Finance Desk'}`, 44, curY + 44)
+          .text(`Amount in Words: ${numberToIndianWords(investmentTxnData?.amount || 0)}`, 280, curY + 8, { width: 260 });
+
+    curY += 72;
+
+    // Statutory Declaration Notice
+    docPdf.fillColor('#eff6ff').rect(36, curY, 522, 40).fill().strokeColor('#93c5fd').rect(36, curY, 522, 40).stroke();
+    docPdf.fillColor('#1e40af').fontSize(6.5).font('Helvetica-Bold').text('STATUTORY INVESTMENT DECLARATION & AUDIT LOCK:', 44, curY + 6);
+    docPdf.fillColor('#1e293b').fontSize(6).font('Helvetica')
+          .text('1. This receipt confirms official posting of investment capital under Pavithra Gold Finance Investment Portfolio Division.', 44, curY + 15)
+          .text('2. Returns accrue according to configured plan parameters, exact-date calculation, and lot-based accounting.', 44, curY + 22)
+          .text('3. Capital redemptions and withdrawals are subject to the approved withdrawal policy and verified bank disbursement.', 44, curY + 29);
+
+    curY += 50;
+
+    // Signatures
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
+          .text(`Prepared By: Finance Officer`, 44, curY)
+          .text(`Approved By: Authorized Signatory`, 230, curY)
+          .text('Investor Acknowledgement:', 410, curY);
+
+    docPdf.strokeColor(borderGray).lineWidth(0.6)
+          .moveTo(44, curY + 22).lineTo(180, curY + 22).stroke()
+          .moveTo(230, curY + 22).lineTo(360, curY + 22).stroke()
+          .moveTo(410, curY + 22).lineTo(540, curY + 22).stroke();
+
+    docPdf.fillColor(textMuted).fontSize(5.5).font('Helvetica')
+          .text('(Digital Signature / Date)', 44, curY + 24)
+          .text('(Investment Committee Stamp)', 230, curY + 24)
+          .text('(Investor Signature / E-Verification)', 410, curY + 24);
+  }
+
+  // --------------------------------------------------------------------------
+  // 7. WITHDRAWAL SETTLEMENT RECEIPT (withdrawal_settlement_receipt / withdrawal_request)
+  // --------------------------------------------------------------------------
+  if (type === 'withdrawal_settlement_receipt' || type === 'withdrawal_request' || type === 'withdrawal_approval') {
+    drawStandardHeader(
+      'OFFICIAL WITHDRAWAL SETTLEMENT RECEIPT',
+      `WDR ID: ${withdrawalData?.withdrawalId || 'PGF-WDR'}`
+    );
+
+    let curY = 138;
+
+    // Investor & Redemption Particulars (Two Columns)
+    docPdf.fillColor(lightCardBg).rect(36, curY, 255, 110).fill().strokeColor(borderGray).rect(36, curY, 255, 110).stroke();
+    docPdf.fillColor(lightCardBg).rect(303, curY, 255, 110).fill().strokeColor(borderGray).rect(303, curY, 255, 110).stroke();
+
+    // Left Column: Investor Profile & Bank
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('INVESTOR & DISBURSEMENT ACCOUNT', 44, curY + 8);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Name: ${investorData?.name || 'Authorized Investor'}`, 44, curY + 22)
+          .text(`Investor ID: ${investorData?.investorId || '—'}`, 44, curY + 34)
+          .text(`Mobile: ${investorData?.phone ? '+91 ' + investorData.phone : '—'}`, 44, curY + 46)
+          .text(`Disbursement Bank: ${withdrawalData?.bankDetails?.bankName || 'Direct Bank Transfer'}`, 44, curY + 58)
+          .text(`Account No: ${withdrawalData?.bankDetails?.accountNumber || '—'}`, 44, curY + 70)
+          .text(`IFSC Code: ${withdrawalData?.bankDetails?.ifsc || '—'}`, 44, curY + 82)
+          .text(`Account Holder: ${withdrawalData?.bankDetails?.accountHolderName || investorData?.name || '—'}`, 44, curY + 94);
+
+    // Right Column: Settlement Figures
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('REDEMPTION & SETTLEMENT FIGURES', 311, curY + 8);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Requested Amount: ${formatINR(withdrawalData?.requestedAmount || 0)}`, 311, curY + 22)
+          .text(`Approved Amount: ${formatINR(withdrawalData?.approvedAmount || withdrawalData?.requestedAmount || 0)}`, 311, curY + 34)
+          .text(`Disbursed Amount: ${formatINR(withdrawalData?.paidAmount || withdrawalData?.approvedAmount || 0)}`, 311, curY + 46)
+          .text(`Request Date: ${withdrawalData?.requestDate || todayStr}`, 311, curY + 58)
+          .text(`Payment / Settlement Date: ${withdrawalData?.paymentDate || todayStr}`, 311, curY + 70)
+          .text(`Settlement Status: ${withdrawalData?.status || 'Completed'}`, 311, curY + 82)
+          .text(`UTR / Reference: ${withdrawalData?.utr || 'NEFT/RTGS Transfer'}`, 311, curY + 94);
+
+    curY += 122;
+
+    // Accounting & Amount in Words
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 18).fill();
+    docPdf.fillColor('#ffffff').fontSize(7.5).font('Helvetica-Bold')
+          .text('CAPITAL REDEMPTION AUDIT & DISBURSEMENT VERIFICATION', 44, curY + 5);
+
+    curY += 18;
+    docPdf.fillColor('#ffffff').rect(36, curY, 522, 50).fill().strokeColor(borderGray).rect(36, curY, 522, 50).stroke();
+
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Amount Disbursed in Words: ${numberToIndianWords(withdrawalData?.paidAmount || withdrawalData?.approvedAmount || 0)}`, 44, curY + 8, { width: 490 })
+          .text(`Remaining Portfolio Capital: ${formatINR(investorAccountData?.currentValue || 0)}`, 44, curY + 26)
+          .text(`Disbursement Channel: Electronic Bank Transfer (NEFT / RTGS / IMPS)`, 280, curY + 26);
+
+    curY += 62;
+
+    // Statutory Declaration Notice
+    docPdf.fillColor('#eff6ff').rect(36, curY, 522, 40).fill().strokeColor('#93c5fd').rect(36, curY, 522, 40).stroke();
+    docPdf.fillColor('#1e40af').fontSize(6.5).font('Helvetica-Bold').text('STATUTORY REDEMPTION & DISBURSEMENT CONFIRMATION:', 44, curY + 6);
+    docPdf.fillColor('#1e293b').fontSize(6).font('Helvetica')
+          .text('1. This receipt confirms that capital redemption funds have been officially transferred to the verified bank account.', 44, curY + 15)
+          .text('2. The investor portfolio balance has been updated atomically in the core enterprise ledger.', 44, curY + 22)
+          .text('3. Any remaining active investment lots continue to accrue returns per configured plan terms.', 44, curY + 29);
+
+    curY += 50;
+
+    // Signatures
+    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
+          .text(`Disbursed By: Finance Desk`, 44, curY)
+          .text(`Approved By: Managing Director`, 230, curY)
+          .text('Investor Acknowledgement:', 410, curY);
+
+    docPdf.strokeColor(borderGray).lineWidth(0.6)
+          .moveTo(44, curY + 22).lineTo(180, curY + 22).stroke()
+          .moveTo(230, curY + 22).lineTo(360, curY + 22).stroke()
+          .moveTo(410, curY + 22).lineTo(540, curY + 22).stroke();
+
+    docPdf.fillColor(textMuted).fontSize(5.5).font('Helvetica')
+          .text('(Digital Transfer Confirmation)', 44, curY + 24)
+          .text('(Authorized Signatory)', 230, curY + 24)
+          .text('(Account Credit Verified)', 410, curY + 24);
+  }
+
+  // --------------------------------------------------------------------------
+  // 8. INVESTOR WEALTH STATEMENT (investor_statement / portfolio_statement)
+  // --------------------------------------------------------------------------
+  if (type === 'investor_statement' || type === 'portfolio_statement') {
+    drawStandardHeader(
+      'INVESTOR WEALTH & PORTFOLIO STATEMENT',
+      `ID: ${investorData?.investorId || 'PGF-INV'}`
+    );
+
+    let curY = 138;
+
+    // Statement Header Card
+    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 60).fill().strokeColor(borderGray).rect(36, curY, 522, 60).stroke();
+
+    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('INVESTOR PROFILE & STATEMENT PERIOD', 44, curY + 8);
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Investor Name: ${investorData?.name || '—'}`, 44, curY + 22)
+          .text(`Investor ID: ${investorData?.investorId || '—'}`, 44, curY + 34)
+          .text(`Mobile: ${investorData?.phone ? '+91 ' + investorData.phone : '—'}`, 44, curY + 46)
+          .text(`Statement Period: ${params.fromDate || 'Origination'} to ${params.toDate || todayStr}`, 300, curY + 22)
+          .text(`Statement Date: ${todayStr}`, 300, curY + 34)
+          .text(`Portfolio Status: ${investorAccountData?.status || 'Active'}`, 300, curY + 46);
+
+    curY += 72;
+
+    // Portfolio Accounting Summary Box
+    docPdf.fillColor(brandDark).rect(36, curY, 522, 18).fill();
+    docPdf.fillColor('#ffffff').fontSize(7.5).font('Helvetica-Bold')
+          .text('PORTFOLIO RECONCILIATION SUMMARY', 44, curY + 5);
+
+    curY += 18;
+    docPdf.fillColor('#ffffff').rect(36, curY, 522, 50).fill().strokeColor(borderGray).rect(36, curY, 522, 50).stroke();
+
+    const totInvested = investorAccountData?.totalInvested || 0;
+    const totReturns = investorAccountData?.accruedReturn || 0;
+    const totWithdrawn = investorAccountData?.totalWithdrawn || 0;
+    const curVal = investorAccountData?.currentValue || (totInvested + totReturns - totWithdrawn);
+
+    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+          .text(`Total Capital Invested: ${formatINR(totInvested)}`, 44, curY + 10)
+          .text(`Total Accrued Returns: ${formatINR(totReturns)}`, 44, curY + 24)
+          .text(`Total Capital Redeemed: ${formatINR(totWithdrawn)}`, 280, curY + 10)
+          .text(`Current Portfolio Value: ${formatINR(curVal)}`, 280, curY + 24);
+
+    curY += 65;
+
+    // Statutory Compliance Notice
+    docPdf.fillColor('#eff6ff').rect(36, curY, 522, 36).fill().strokeColor('#93c5fd').rect(36, curY, 522, 36).stroke();
+    docPdf.fillColor('#1e40af').fontSize(6.5).font('Helvetica-Bold').text('IMPORTANT REGULATORY & ACCOUNTING NOTE:', 44, curY + 6);
+    docPdf.fillColor('#1e293b').fontSize(6).font('Helvetica')
+          .text('This statement reflects posted capital movements and accrued returns per configured plan parameters. It is an official computer-generated document issued by Pavithra Gold Finance.', 44, curY + 15)
+          .text('For queries or withdrawal requests, contact the designated PGF Investment Helpdesk.', 44, curY + 23);
+  }
+
   // Finalize PDF stream
   docPdf.end();
 
@@ -2119,7 +2452,9 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
     docPdf.on('error', reject);
   });
 
-  const outputFilename = `${type}_${repledgeData?.repledge_number || loanData?.loan_number || customerData?.customer_number || paymentData?.receipt_number || 'document'}.pdf`;
+  const outputFilename = isInvestorDoc
+    ? `${type}_${investmentTxnData?.transactionId || withdrawalData?.withdrawalId || investorData?.investorId || 'document'}.pdf`
+    : `${type}_${repledgeData?.repledge_number || loanData?.loan_number || customerData?.customer_number || paymentData?.receipt_number || 'document'}.pdf`;
 
   return new Response(new Uint8Array(pdfBuffer), {
     status: 200,

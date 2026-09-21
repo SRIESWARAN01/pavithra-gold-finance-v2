@@ -249,7 +249,7 @@ export function calculateGoldValuation(
   netWeight: number,
   purity: '18K' | '21K' | '22K' | '24K',
   ratePerGram: number,
-  ltvPercentage: number = 100
+  ltvPercentage: number = 75
 ): { marketValue: number; maxEligibleLoan: number } {
   // Purity factors: 24K = 100%, 22K = 91.67%, 21K = 87.5%, 18K = 75%
   const purityFactor: Record<string, number> = {

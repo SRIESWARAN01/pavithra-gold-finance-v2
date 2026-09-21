@@ -49,6 +49,11 @@ export default function EmployeeLayout({
           return;
         }
 
+        if (prof.role === 'Investor') {
+          router.replace('/investor/dashboard');
+          return;
+        }
+
         setProfile(prof);
       } catch (err) {
         console.error('Error verifying staff auth:', err);

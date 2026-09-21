@@ -37,6 +37,11 @@ export default function AdminLayout({
           return;
         }
 
+        if (prof.role === 'Investor') {
+          router.replace('/investor/dashboard');
+          return;
+        }
+
         if (prof.role !== 'Admin' && prof.role !== 'Owner') {
           router.replace('/employee/dashboard');
           return;

@@ -193,7 +193,7 @@ export default function CustomerOnboarding() {
       if (isFirebaseConfigured()) {
         try {
           // 1. Call Onboard API route to create user in Auth and profiles table
-          const idToken = await auth.currentUser?.getIdToken();
+          const idToken = await auth.currentUser?.getIdToken(true);
           if (!idToken) {
             throw new Error('Your administrator session has expired. Please sign in again.');
           }

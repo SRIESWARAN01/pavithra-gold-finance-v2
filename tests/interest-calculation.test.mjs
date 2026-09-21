@@ -207,3 +207,87 @@ test('Interest Engine: Reducing balance calculation with intermediate repayment'
   const interestINR = fromPaise(interestPaise);
   assert.ok(interestINR >= 1325 && interestINR <= 1340, `Expected between 1325 and 1340, got ${interestINR}`);
 });
+
+// -----------------------------------------------------------------------------
+// Edge Case: Same-day loan — 0 days elapsed = 0 interest
+// -----------------------------------------------------------------------------
+test('Interest Engine: Same-day loan accrues zero interest', () => {
+  const startDate = new Date('2025-06-15');
+  const endDate = new Date('2025-06-15'); // Same day
+  const principalPaise = toPaise(50000);
+
+  const interestPaise = calculateAccruedInterest({
+    principalPaise,
+    apr: 24,
+    startDate,
+    endDate,
+  });
+
+  assert.strictEqual(interestPaise, 0);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Leap year boundary — Dec 31 → Jan 1
+// -----------------------------------------------------------------------------
+test('Interest Engine: Leap year boundary crossing (2024 → 2025)', () => {
+  const startDate = new Date('2024-12-30');
+  const endDate = new Date('2025-01-02'); // 3 days: Dec 30, Dec 31 (leap), Jan 1 (non-leap)
+  const principalPaise = toPaise(100000);
+  const apr = 18;
+
+  const interestPaise = calculateAccruedInterest({
+    principalPaise,
+    apr,
+    startDate,
+    endDate,
+  });
+
+  // Dec 30, Dec 31 use 366 days denominator: 10000000 * 0.18 / 366 ≈ 4918 paise/day × 2 = 9836
+  // Jan 1 uses 365 days denominator: 10000000 * 0.18 / 365 ≈ 4932 paise/day × 1 = 4932
+  // Total ≈ 14768 paise ≈ ₹147.68
+  const interestINR = fromPaise(interestPaise);
+  assert.ok(interestINR >= 147 && interestINR <= 149, `Expected ~148, got ${interestINR}`);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: Very large principal — no precision loss
+// -----------------------------------------------------------------------------
+test('Interest Engine: Large principal (1 Crore) maintains precision', () => {
+  const startDate = new Date('2025-01-01');
+  const endDate = new Date('2025-01-31'); // 30 days
+  const principalPaise = toPaise(10000000); // 1 Crore = ₹1,00,00,000
+  const apr = 24;
+
+  const interestPaise = calculateAccruedInterest({
+    principalPaise,
+    apr,
+    startDate,
+    endDate,
+  });
+
+  // Daily: 10,00,00,000 paise * 0.24 / 365 ≈ 657,534 paise
+  // 30 days: ≈ 19,726,027 paise ≈ ₹1,97,260.27
+  const interestINR = fromPaise(interestPaise);
+  assert.ok(interestINR >= 197000 && interestINR <= 198000, `Expected ~197,260 for 1Cr@24%, got ${interestINR}`);
+});
+
+// -----------------------------------------------------------------------------
+// Edge Case: One day loan
+// -----------------------------------------------------------------------------
+test('Interest Engine: One-day loan accrues exactly one day of interest', () => {
+  const startDate = new Date('2025-03-15');
+  const endDate = new Date('2025-03-16'); // 1 day
+  const principalPaise = toPaise(50000); // ₹50,000
+  const apr = 18;
+
+  const interestPaise = calculateAccruedInterest({
+    principalPaise,
+    apr,
+    startDate,
+    endDate,
+  });
+
+  // Daily: 5000000 paise * 0.18 / 365 ≈ 2466 paise ≈ ₹24.66
+  const interestINR = fromPaise(interestPaise);
+  assert.ok(interestINR >= 24 && interestINR <= 25, `Expected ~24.66, got ${interestINR}`);
+});

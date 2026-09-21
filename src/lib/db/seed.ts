@@ -56,25 +56,7 @@ export async function seedInitialSystemData() {
       updated_at: new Date().toISOString(),
     }, { merge: true });
 
-    // 4. Initialize Demo Customer profile
-    await setDoc(doc(db, 'profiles', 'cust_9876543210'), {
-      name: 'Demo Customer',
-      phone_primary: '9876543210',
-      role: 'Customer',
-      status: 'Active',
-      customer_number: 'PGF-CUST-987654',
-      address: '45/B, South Veli Street, Madurai',
-      city: 'Madurai',
-      state: 'Tamil Nadu',
-      pin_code: '625001',
-      national_id: '458912345678',
-      pan_number: 'ABCDE1234F',
-      kyc_status: 'Approved',
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    }, { merge: true });
-
-    console.log('System initialized successfully without demo artifacts.');
+    console.log('System initialized successfully (counters, settings, admin profile).');
   } catch (err) {
     console.error('Failed to initialize system database:', err);
   }

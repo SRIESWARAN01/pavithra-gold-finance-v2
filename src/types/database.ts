@@ -16,7 +16,8 @@ export type UserRole =
   | 'Cashier'
   | 'Accountant'
   | 'Collection_Officer'
-  | 'Customer_Support';
+  | 'Customer_Support'
+  | 'Investor';
 
 export interface Branch {
   id: string;
@@ -86,7 +87,12 @@ export type NotificationType =
   | 'Overdue_Alert'
   | 'Loan_Closed'
   | 'Welcome'
-  | 'System';
+  | 'System'
+  | 'Investment_Approved'
+  | 'Investment_Rejected'
+  | 'Withdrawal_Submitted'
+  | 'Withdrawal_Approved'
+  | 'Withdrawal_Completed';
 
 export type DocumentType =
   | 'Pawn_Ticket'
@@ -1179,5 +1185,289 @@ export interface KYCConsultationData {
   generatedAt: string;
 }
 
+// ============================================================================
+// Investment Management & Investor Portfolio Types
+// ============================================================================
 
+export type CompoundingFrequency = 'Annual' | 'Semi_Annual' | 'Quarterly' | 'Monthly' | 'Simple';
 
+export type InvestmentStatus = 'Active' | 'Inactive' | 'Closed' | 'Pending_Verification';
+
+export type InvestmentTransactionType =
+  | 'Initial_Investment'
+  | 'Additional_Investment'
+  | 'Return_Accrual'
+  | 'Withdrawal_Request'
+  | 'Withdrawal_Approved'
+  | 'Withdrawal_Paid'
+  | 'Withdrawal_Rejected'
+  | 'Adjustment'
+  | 'Reversal';
+
+export type WithdrawalStatus =
+  | 'Pending'
+  | 'Approved'
+  | 'Payment_Processing'
+  | 'Completed'
+  | 'Rejected';
+
+export type PaymentVerificationStatus = 'Pending_Verification' | 'Approved' | 'Rejected';
+
+export interface Investor extends Partial<Profile> {
+  id: string;
+  investor_id?: string;
+  investorId?: string;
+  name: string;
+  phone_primary?: string;
+  phone?: string;
+  email?: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+  pan?: string | null;
+  bank_account?: string | null;
+  ifsc?: string | null;
+  bank_name?: string | null;
+  nominee?: {
+    name?: string;
+    relationship?: string;
+    phone?: string;
+  } | null;
+}
+
+export interface InvestmentNotification {
+  id?: string;
+  investorId: string;
+  type: string;
+  title: string;
+  message: string;
+  read: boolean;
+  timestamp: string;
+  actionUrl?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface InvestmentPlan {
+  id: string;
+  name: string;
+  annual_rate: number; // e.g. 12 for 12%
+  compounding_frequency: CompoundingFrequency;
+  minimum_amount: number;
+  maximum_amount: number;
+  lock_in_period_months: number;
+  early_withdrawal_policy: string;
+  status: 'Active' | 'Inactive';
+  effective_from: string;
+  effective_to?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestmentSettings {
+  annual_rate: number;
+  compounding_frequency: CompoundingFrequency;
+  minimum_amount: number;
+  maximum_amount: number;
+  lock_in_period_months: number;
+  processing_sla_hours: number;
+  helpdesk_whatsapp_number: string;
+  support_email: string;
+  qr_code_url: string;
+  qr_title: string;
+  payment_instructions: string;
+  terms_and_conditions: string;
+  disclaimer_text: string;
+  updated_at?: string;
+  // CamelCase aliases
+  annualRate?: number;
+  compoundingFrequency?: CompoundingFrequency;
+  minimumAmount?: number;
+  maximumAmount?: number;
+  lockInPeriodMonths?: number;
+  processingSlaHours?: number;
+  helpdeskWhatsAppNumber?: string;
+  supportEmail?: string;
+  qrCodeUrl?: string;
+  qrTitle?: string;
+  paymentInstructions?: string;
+  termsAndConditions?: string;
+  disclaimerText?: string;
+}
+
+export interface InvestmentLot {
+  id: string;
+  lot_number: string; // e.g. "PGF-LOT-000001"
+  investor_id: string; // references Profile.id (UID)
+  investor_number: string; // e.g. "PGF-INV-000001"
+  investment_date: string; // YYYY-MM-DD
+  principal_amount: number;
+  applicable_rate: number; // e.g. 12
+  compounding_frequency: CompoundingFrequency;
+  status: 'Active' | 'Withdrawn' | 'Partially_Withdrawn';
+  withdrawn_amount: number;
+  accrued_return: number;
+  current_value: number;
+  plan_id?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestmentAccount {
+  id: string;
+  investor_id: string; // references Profile.id
+  investor_number: string; // "PGF-INV-000001"
+  total_invested: number;
+  total_additional_investment: number;
+  total_withdrawn: number;
+  accrued_return: number;
+  current_value: number;
+  status: InvestmentStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestmentTransaction {
+  id: string;
+  transaction_number: string; // e.g. "PGF-INV-TXN-000001"
+  investor_id: string;
+  investor_number: string;
+  lot_id?: string | null;
+  type: InvestmentTransactionType;
+  amount: number;
+  rate: number;
+  return_amount?: number;
+  payment_mode?: string | null;
+  utr_number?: string | null;
+  transaction_reference?: string | null;
+  status: 'Pending' | 'Completed' | 'Rejected' | 'Cancelled';
+  notes?: string | null;
+  created_by: string;
+  approved_by?: string | null;
+  transaction_date: string; // YYYY-MM-DD
+  created_at: string;
+  // Aliases
+  transactionId?: string;
+  transactionType?: string;
+  paymentMode?: string | null;
+  utr?: string | null;
+  lotId?: string | null;
+  transactionDate?: string;
+}
+
+export interface WithdrawalRequest {
+  id: string;
+  withdrawal_number: string; // e.g. "PGF-WDR-000001"
+  investor_id: string;
+  investor_number: string;
+  investor_name: string;
+  investor_phone: string;
+  requested_amount: number;
+  approved_amount?: number | null;
+  paid_amount?: number | null;
+  request_date: string; // YYYY-MM-DD
+  approval_date?: string | null;
+  payment_date?: string | null;
+  utr_number?: string | null;
+  payment_mode?: string | null;
+  bank_account_details?: {
+    account_number?: string;
+    ifsc_code?: string;
+    bank_name?: string;
+    branch_name?: string;
+    account_holder_name?: string;
+    upi_id?: string;
+  } | null;
+  reason?: string | null;
+  status: WithdrawalStatus;
+  admin_notes?: string | null;
+  created_at: string;
+  updated_at: string;
+  // Aliases
+  withdrawalId?: string;
+  requestedAmount?: number;
+  approvedAmount?: number | null;
+  paidAmount?: number | null;
+  bankDetails?: any;
+}
+
+export interface InvestmentPaymentRequest {
+  id: string;
+  request_number: string; // e.g. "PGF-REQ-000001"
+  investor_id: string;
+  investor_number: string;
+  investor_name: string;
+  investor_phone: string;
+  amount: number;
+  payment_date: string; // YYYY-MM-DD
+  payment_mode: string; // UPI, NEFT, IMPS, Cash, Bank Transfer
+  utr_number: string;
+  screenshot_url?: string | null;
+  status: PaymentVerificationStatus;
+  rejection_reason?: string | null;
+  verified_by?: string | null;
+  verified_at?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface InvestorPortfolioSummary {
+  investor_id: string;
+  investor_number: string;
+  investor_name: string;
+  investor_phone: string;
+  total_invested: number;
+  additional_investments: number;
+  total_withdrawn: number;
+  accrued_return: number;
+  current_value: number;
+  net_invested_capital: number;
+  annual_rate: number;
+  start_date: string;
+  duration_text: string;
+  active_lots_count: number;
+  pending_withdrawals_count: number;
+  eligible_withdrawal_amount: number;
+  status: InvestmentStatus;
+  // Aliases
+  investor?: any;
+  transactions?: any[];
+  lots?: any[];
+  totalInvested?: number;
+  currentValue?: number;
+  totalReturns?: number;
+  eligibleWithdrawalAmount?: number;
+  activeLotsCount?: number;
+}
+
+export interface InvestmentGrowthPoint {
+  date: string;
+  label: string;
+  invested_capital: number;
+  accrued_return: number;
+  total_value: number;
+  is_projected: boolean;
+}
+
+export interface AdminInvestmentDashboardMetrics {
+  totalInvestors: number;
+  activeInvestors: number;
+  totalInvestmentCapital: number;
+  totalCurrentPortfolioValue: number;
+  totalReturns: number;
+  todayInvestments: number;
+  todayWithdrawals: number;
+  pendingInvestmentApprovals: number;
+  pendingWithdrawalRequests: number;
+  completedWithdrawals: number;
+}
+
+export interface InvestmentConsolidatedItem {
+  date: string;
+  newInvestorsCount: number;
+  investmentsAmount: number;
+  additionalFundsAmount: number;
+  withdrawalsAmount: number;
+  returnsAmount: number;
+  netPosition: number;
+}

@@ -40,11 +40,23 @@ export interface PdfParams {
     | 'renewal'
     | 'repledge'
     | 'bank_repledge'
-    | 'report';
+    | 'report'
+    | 'investment_receipt'
+    | 'additional_investment_receipt'
+    | 'withdrawal_request'
+    | 'withdrawal_approval'
+    | 'withdrawal_settlement_receipt'
+    | 'investor_statement'
+    | 'portfolio_statement';
   loanId?: string | null;
   paymentId?: string | null;
   customerId?: string | null;
   repledgeId?: string | null;
+  investorId?: string | null;
+  transactionId?: string | null;
+  withdrawalId?: string | null;
+  fromDate?: string | null;
+  toDate?: string | null;
   branchId?: string | null;
   report?: string | null;
   month?: string | null;
@@ -66,6 +78,11 @@ export function getPdfApiUrl(params: PdfParams, token?: string | null): string {
   if (params.paymentId) queryParams.set('paymentId', params.paymentId);
   if (params.customerId) queryParams.set('customerId', params.customerId);
   if (params.repledgeId) queryParams.set('repledgeId', params.repledgeId);
+  if (params.investorId) queryParams.set('investorId', params.investorId);
+  if (params.transactionId) queryParams.set('transactionId', params.transactionId);
+  if (params.withdrawalId) queryParams.set('withdrawalId', params.withdrawalId);
+  if (params.fromDate) queryParams.set('fromDate', params.fromDate);
+  if (params.toDate) queryParams.set('toDate', params.toDate);
   if (params.branchId) queryParams.set('branchId', params.branchId);
   if (params.report) queryParams.set('report', params.report);
   if (params.month) queryParams.set('month', params.month);
@@ -89,7 +106,7 @@ export async function getAuthorizedPdfUrl(params: PdfParams): Promise<string> {
   let token: string | null = null;
   try {
     if (auth.currentUser) {
-      token = await auth.currentUser.getIdToken();
+      token = await auth.currentUser.getIdToken(true);
     }
   } catch (err) {
     console.warn('Could not acquire ID token for PDF URL:', err);
@@ -105,7 +122,7 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
     let token: string | null = null;
     try {
       if (auth.currentUser) {
-        token = await auth.currentUser.getIdToken();
+        token = await auth.currentUser.getIdToken(true);
       }
     } catch {}
 
@@ -166,7 +183,7 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
     console.error('Error downloading PDF via POST, trying GET fallback:', err);
     let token: string | null = null;
     try {
-      if (auth.currentUser) token = await auth.currentUser.getIdToken();
+      if (auth.currentUser) token = await auth.currentUser.getIdToken(true);
     } catch {}
     window.open(getPdfApiUrl({ ...params, download: true }, token), '_blank');
   }
@@ -180,7 +197,7 @@ export async function printPdfDocument(params: PdfParams): Promise<void> {
     let token: string | null = null;
     try {
       if (auth.currentUser) {
-        token = await auth.currentUser.getIdToken();
+        token = await auth.currentUser.getIdToken(true);
       }
     } catch {}
 
@@ -246,7 +263,7 @@ export async function printPdfDocument(params: PdfParams): Promise<void> {
     console.error('Error printing PDF:', err);
     let token: string | null = null;
     try {
-      if (auth.currentUser) token = await auth.currentUser.getIdToken();
+      if (auth.currentUser) token = await auth.currentUser.getIdToken(true);
     } catch {}
     window.open(getPdfApiUrl(params, token), '_blank');
   }

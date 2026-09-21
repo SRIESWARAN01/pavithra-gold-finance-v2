@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Lock, Eye, EyeOff, ShieldAlert, ShieldCheck, Users, ArrowRight } from 'lucide-react';
+import { Lock, Eye, EyeOff, ShieldAlert, ShieldCheck, Users, ArrowRight, TrendingUp } from 'lucide-react';
 import { auth, db } from '@/lib/firebase';
 import { signInWithEmailAndPassword } from 'firebase/auth';
 import { doc, getDoc } from 'firebase/firestore';
@@ -12,7 +12,7 @@ import Logo from '@/components/Logo';
 export default function LoginPage() {
   const router = useRouter();
 
-  const [activePortal, setActivePortal] = useState<'admin' | 'customer'>('admin');
+  const [activePortal, setActivePortal] = useState<'admin' | 'customer' | 'investor'>('admin');
   const [phone, setPhone] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -20,7 +20,7 @@ export default function LoginPage() {
   const [error, setError] = useState<string | null>(null);
 
   // Switch portal tab
-  const handlePortalSwitch = (portal: 'admin' | 'customer') => {
+  const handlePortalSwitch = (portal: 'admin' | 'customer' | 'investor') => {
     setActivePortal(portal);
     setError(null);
     setPhone('');
@@ -61,11 +61,6 @@ export default function LoginPage() {
       const profileRole = (profile.role || 'Customer') as UserRole;
       const profileName = profile.name || 'Account Holder';
       const customerNumber = profile.customer_number || null;
-      const isCustomer = profileRole === 'Customer';
-
-      if ((activePortal === 'customer') !== isCustomer) {
-        throw new Error(isCustomer ? 'Please sign in through the Customer Portal.' : 'Please sign in through the Admin / Staff portal.');
-      }
 
       // 3. Store active session in LocalStorage (for instant access across layouts)
       if (typeof window !== 'undefined') {
@@ -81,8 +76,10 @@ export default function LoginPage() {
         localStorage.setItem('pgf_active_session', JSON.stringify(sessionPayload));
       }
 
-      // 4. Clean Redirection to appropriate portal
-      if (profileRole === 'Customer') {
+      // 4. Automatic clean redirection to appropriate portal based on role
+      if (profileRole === 'Investor') {
+        router.push('/investor/dashboard');
+      } else if (profileRole === 'Customer') {
         router.push('/customer/dashboard');
       } else if (profileRole === 'Admin' || profileRole === 'Owner') {
         router.push('/admin/dashboard');
@@ -156,30 +153,42 @@ export default function LoginPage() {
           </div>
 
           {/* Portal Switcher Tabs */}
-          <div className="grid grid-cols-2 gap-2 p-1 bg-[#F3F4F6] rounded-xl mb-6">
+          <div className="grid grid-cols-3 gap-1.5 p-1 bg-[#F3F4F6] rounded-xl mb-6">
             <button
               type="button"
               onClick={() => handlePortalSwitch('admin')}
-              className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 activePortal === 'admin'
                   ? 'bg-[#2563EB] text-white shadow-md shadow-blue-600/20'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <ShieldCheck size={14} />
-              Admin / Staff
+              <ShieldCheck size={13} />
+              Admin
             </button>
             <button
               type="button"
               onClick={() => handlePortalSwitch('customer')}
-              className={`py-2.5 px-3 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 cursor-pointer ${
+              className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
                 activePortal === 'customer'
                   ? 'bg-[#2563EB] text-white shadow-md shadow-blue-600/20'
                   : 'text-gray-600 hover:text-gray-900'
               }`}
             >
-              <Users size={14} />
-              Customer Portal
+              <Users size={13} />
+              Customer
+            </button>
+            <button
+              type="button"
+              onClick={() => handlePortalSwitch('investor')}
+              className={`py-2 px-2 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                activePortal === 'investor'
+                  ? 'bg-[#D97706] text-white shadow-md shadow-amber-600/20'
+                  : 'text-gray-600 hover:text-gray-900'
+              }`}
+            >
+              <TrendingUp size={13} />
+              Investor
             </button>
           </div>
 
@@ -194,7 +203,11 @@ export default function LoginPage() {
             {/* Phone Number Field */}
             <div className="space-y-1.5">
               <label className="text-xs font-bold text-gray-700 uppercase tracking-wider block">
-                {activePortal === 'admin' ? 'Admin Mobile Number' : 'Customer Registered Mobile'}
+                {activePortal === 'admin'
+                  ? 'Admin Mobile Number'
+                  : activePortal === 'investor'
+                  ? 'Investor Mobile Number'
+                  : 'Customer Registered Mobile'}
               </label>
               <div className="relative">
                 <span className="absolute left-3.5 top-3 text-xs text-gray-400 font-semibold">+91</span>

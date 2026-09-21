@@ -40,8 +40,17 @@ export default function CustomerLayout({
           return;
         }
 
+        if (prof.role === 'Investor') {
+          router.replace('/investor/dashboard');
+          return;
+        }
+
         if (prof.role !== 'Customer') {
-          router.replace('/admin/dashboard');
+          if (prof.role === 'Admin' || prof.role === 'Owner') {
+            router.replace('/admin/dashboard');
+          } else {
+            router.replace('/employee/dashboard');
+          }
           return;
         }
 
