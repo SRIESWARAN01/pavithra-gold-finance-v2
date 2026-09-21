@@ -372,6 +372,43 @@ export async function getBankRePledgeById(id: string): Promise<BankRePledge | nu
 }
 
 /**
+ * Fetch all Bank Re-Pledges associated with a given loan ID or loan number.
+ */
+export async function getBankRePledgesByLoan(loanIdOrNumber: string): Promise<BankRePledge[]> {
+  if (!loanIdOrNumber) return [];
+  try {
+    // 1. Try by loan_id
+    const q1 = query(collection(db, COLLECTION), where('loan_id', '==', loanIdOrNumber));
+    const snap1 = await getDocs(q1);
+    let items = snap1.docs.map((d) => ({ id: d.id, ...d.data() } as BankRePledge));
+
+    // 2. If empty, try by loan_number
+    if (items.length === 0) {
+      const q2 = query(collection(db, COLLECTION), where('loan_number', '==', loanIdOrNumber));
+      const snap2 = await getDocs(q2);
+      items = snap2.docs.map((d) => ({ id: d.id, ...d.data() } as BankRePledge));
+    }
+
+    items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    return items;
+  } catch (err) {
+    console.warn('Error fetching re-pledges by loan:', err);
+    return [];
+  }
+}
+
+/**
+ * Fetch the currently active Bank Re-Pledge for a loan (Active, Pledged with Bank, or Pending Approval).
+ */
+export async function getActiveBankRePledgeByLoan(loanIdOrNumber: string): Promise<BankRePledge | null> {
+  const pledges = await getBankRePledgesByLoan(loanIdOrNumber);
+  const active = pledges.find(
+    (p) => p.status === 'Active' || p.status === 'Pledged with Bank' || p.status === 'Pending Approval'
+  );
+  return active || (pledges.length > 0 ? pledges[0] : null);
+}
+
+/**
  * Compute real-time dashboard KPIs across all Bank Re-Pledges.
  */
 export function calculateRePledgeMetrics(items: BankRePledge[]) {

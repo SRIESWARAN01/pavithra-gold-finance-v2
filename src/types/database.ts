@@ -430,6 +430,23 @@ export interface Payment {
   remarks: string | null;
   slogan_id?: string | null;
   slogan_text?: string | null;
+  // Precise integer paise fields for enterprise financial auditing
+  amount_received_paise?: number;
+  penalty_paid_paise?: number;
+  interest_paid_paise?: number;
+  principal_paid_paise?: number;
+  principal_before_paise?: number;
+  principal_after_paise?: number;
+  interest_before_paise?: number;
+  interest_after_paise?: number;
+  idempotency_key?: string | null;
+  calculation_snapshot?: Record<string, any> | null;
+  status?: 'POSTED' | 'REVERSED';
+  reversal_reason?: string | null;
+  reversed_by?: string | null;
+  reversed_at?: string | null;
+  collected_by?: string | null;
+  branch_id?: string | null;
   // Joined
   loan?: Loan;
   customer?: Profile;
@@ -456,6 +473,86 @@ export interface PaymentInsert {
   payment_date?: string;
   slogan_id?: string;
   slogan_text?: string;
+  amount_received_paise?: number;
+  penalty_paid_paise?: number;
+  interest_paid_paise?: number;
+  principal_paid_paise?: number;
+  principal_before_paise?: number;
+  principal_after_paise?: number;
+  interest_before_paise?: number;
+  interest_after_paise?: number;
+  idempotency_key?: string;
+  calculation_snapshot?: Record<string, any>;
+  status?: 'POSTED' | 'REVERSED';
+  collected_by?: string;
+  branch_id?: string;
+}
+
+// ----------------------------------------------------------------------------
+
+export type RenewalType =
+  | 'Interest_Only'
+  | 'Interest_And_Principal'
+  | 'Full_Settlement_And_Renewal'
+  | 'Additional_Disbursement'
+  | 'INTEREST_ONLY'
+  | 'INTEREST_AND_PRINCIPAL'
+  | 'FULL_SETTLEMENT_AND_NEW'
+  | 'ADDITIONAL_DISBURSEMENT';
+
+/** Loan renewal transaction record */
+export interface LoanRenewal {
+  id: string;
+  renewal_number: string;
+  loan_id: string;
+  loan_number: string;
+  customer_id: string;
+  renewal_type: RenewalType;
+  renewal_date: string;
+  old_principal: number;
+  new_principal: number;
+  principal_paid: number;
+  additional_disbursement?: number;
+  interest_due: number;
+  interest_paid: number;
+  penalty_paid: number;
+  total_paid: number;
+  old_maturity_date: string;
+  new_maturity_date: string;
+  new_tenure_months: number;
+  apr_applied: number;
+  new_loan_id?: string | null;
+  new_loan_number?: string | null;
+  receipt_number: string;
+  remarks?: string;
+  created_by: string;
+  created_by_name: string;
+  created_at: string;
+}
+
+export interface LoanRenewalInsert {
+  loan_id: string;
+  customer_id: string;
+  renewal_type: RenewalType;
+  renewal_date?: string;
+  old_principal: number;
+  new_principal: number;
+  principal_paid: number;
+  additional_disbursement?: number;
+  interest_due: number;
+  interest_paid: number;
+  penalty_paid?: number;
+  total_paid: number;
+  old_maturity_date: string;
+  new_maturity_date: string;
+  new_tenure_months: number;
+  apr_applied: number;
+  new_loan_id?: string | null;
+  new_loan_number?: string | null;
+  receipt_number?: string;
+  remarks?: string;
+  created_by: string;
+  created_by_name: string;
 }
 
 // ----------------------------------------------------------------------------
@@ -698,6 +795,9 @@ export interface BankRePledge {
   bank_name: string;
   bank_branch: string;
   bank_account_number: string;
+  bank_loan_number?: string; // Bank Loan / Pledge Number
+  pledge_name?: string; // Name under which the gold is pledged at the bank
+  branch_name?: string; // PGF branch responsible
   pledge_date: string;
   bank_pledge_amount: number;
   bank_interest_rate: number;
@@ -762,6 +862,9 @@ export interface BankRePledgeInsert {
   bank_name: string;
   bank_branch: string;
   bank_account_number: string;
+  bank_loan_number?: string;
+  pledge_name?: string;
+  branch_name?: string;
   pledge_date: string;
   bank_pledge_amount: number;
   bank_interest_rate: number;
@@ -777,5 +880,304 @@ export interface BankRePledgeInsert {
   created_by_name: string;
   status?: BankRePledgeStatus;
 }
+
+// ----------------------------------------------------------------------------
+// EXPENSES & PROFIT/LOSS MANAGEMENT
+// ----------------------------------------------------------------------------
+
+export type ExpenseStatus = 'Draft' | 'Pending Approval' | 'Approved' | 'Rejected' | 'Posted' | 'Cancelled';
+export type ExpensePaymentMode = 'Cash' | 'Bank Transfer' | 'UPI' | 'Cheque' | 'Other';
+
+export interface ExpenseCategory {
+  id: string;
+  name: string; // e.g. "Employee / Staff", "Office", "Office Supplies", "Maintenance", "Business / Operations", "Other"
+  subcategories: string[];
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface Expense {
+  id: string;
+  expense_number: string; // e.g. PGF-EXP-000001
+  date: string; // YYYY-MM-DD
+  category: string; // Expense Head
+  subcategory: string;
+  description: string;
+  amount: number;
+  payment_mode: ExpensePaymentMode;
+  account: string; // 'Vault Petty Cash' | 'Bank Clearing Account' | string
+  transaction_ref?: string | null;
+  vendor_name?: string | null;
+  invoice_number?: string | null;
+  invoice_date?: string | null;
+  supporting_doc_url?: string | null;
+  branch_id?: string | null;
+  branch_name?: string | null;
+  status: ExpenseStatus;
+  created_by: string;
+  created_by_name: string;
+  approved_by?: string | null;
+  approved_by_name?: string | null;
+  approved_at?: string | null;
+  rejection_reason?: string | null;
+  cancellation_reason?: string | null;
+  journal_voucher_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExpenseInsert {
+  date: string;
+  category: string;
+  subcategory: string;
+  description: string;
+  amount: number;
+  payment_mode: ExpensePaymentMode;
+  account?: string;
+  transaction_ref?: string;
+  vendor_name?: string;
+  invoice_number?: string;
+  invoice_date?: string;
+  supporting_doc_url?: string;
+  branch_id?: string;
+  branch_name?: string;
+  status?: ExpenseStatus;
+  created_by: string;
+  created_by_name: string;
+}
+
+export interface DailyPnLReport {
+  reportReference: string;
+  generatedAt: string;
+  date: string;
+  branchId?: string;
+  branchName: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netProfitLoss: number;
+  isProfit: boolean;
+  summary: {
+    totalIncome: number;
+    totalExpenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+  incomeBreakdown: {
+    interestIncome: number;
+    penaltyIncome: number;
+    processingFees: number;
+    otherIncome: number;
+  };
+  expenseBreakdown: Array<{
+    category: string;
+    count: number;
+    amount: number;
+  }>;
+  expenses: Expense[];
+  expenseItems: Expense[];
+}
+
+export interface MonthlyPnLReport {
+  reportReference: string;
+  generatedAt: string;
+  year: number;
+  month: number;
+  monthName: string;
+  branchId?: string;
+  branchName: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netProfitLoss: number;
+  isProfit: boolean;
+  summary: {
+    totalIncome: number;
+    totalExpenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+  expenseBreakdown: Array<{
+    category: string;
+    count: number;
+    amount: number;
+  }>;
+  dailyTrend: Array<{
+    date: string;
+    day: number;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  }>;
+}
+
+export interface YearlyPnLReport {
+  reportReference: string;
+  generatedAt: string;
+  financialYear: string; // e.g. "2026-27"
+  branchId?: string;
+  branchName: string;
+  totalIncome: number;
+  totalExpenses: number;
+  netProfitLoss: number;
+  isProfit: boolean;
+  summary: {
+    totalIncome: number;
+    totalExpenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+  monthlyTrend: Array<{
+    month: string;
+    monthIndex: number;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  }>;
+  monthlyBreakdown: Array<{
+    monthName: string;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  }>;
+  expenseBreakdown: Array<{
+    category: string;
+    amount: number;
+  }>;
+  expenseHeadAnalysis: Array<{
+    category: string;
+    amount: number;
+  }>;
+}
+
+export interface BranchWisePnLItem {
+  branchId: string;
+  branchName: string;
+  income: number;
+  expenses: number;
+  netProfitLoss: number;
+  isProfit: boolean;
+}
+
+export interface PnLDashboardMetrics {
+  today: {
+    date: string;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+  thisMonth: {
+    monthName: string;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+  thisYear: {
+    financialYear: string;
+    income: number;
+    expenses: number;
+    netProfitLoss: number;
+    isProfit: boolean;
+  };
+}
+
+// ============================================================================
+// KYC Consultation Module Types
+// ============================================================================
+
+export interface KYCOrnamentItem {
+  id: string;
+  item_description: string;
+  ornament_type?: string | null;
+  quantity: number;
+  gross_weight: number;
+  stone_weight: number;
+  net_weight: number;
+  purity_karat: GoldPurity;
+  hallmark?: boolean;
+  valuation_inr?: number;
+  front_photo_url?: string | null;
+  back_photo_url?: string | null;
+  side_photo_url?: string | null;
+  photos?: Array<{ id: string; photo_url: string }>;
+}
+
+export interface KYCPaymentItem {
+  id: string;
+  payment_date: string;
+  receipt_number: string;
+  amount_paid: number;
+  interest_portion: number;
+  principal_portion: number;
+  penalty_amount: number;
+  waiver_amount: number;
+  remaining_principal: number;
+  mode: string;
+}
+
+export interface KYCRePledgeInfo {
+  repledge_id: string;
+  repledge_number: string;
+  bank_name: string;
+  bank_branch: string;
+  bank_account_number?: string;
+  bank_loan_number?: string;
+  bank_pledge_amount: number;
+  bank_interest_rate: number;
+  total_net_weight: number;
+  custody_location: string;
+  pledge_date: string;
+  status: string;
+}
+
+export interface CustomerPledgeHistoryItem {
+  loanId: string;
+  loanNumber: string;
+  pledgeDate: string; // YYYY-MM-DD
+  originalPledgeAmount: number;
+  releaseDate: string | null; // YYYY-MM-DD or null
+  daysActive: number;
+  daysActiveText: string; // e.g. "454 Days" or "Active – 250 Days"
+  status: LoanStatus;
+  interestRateApr: number;
+  maturityDate?: string | null;
+  principalPaid: number;
+  currentPrincipal: number;
+  interestOutstanding: number;
+  penaltyOutstanding: number;
+  totalOutstanding: number;
+  ornamentsCount: number;
+  totalNetWeight: number;
+  totalGrossWeight: number;
+  totalStoneWeight: number;
+  branchId?: string | null;
+  branchName?: string;
+  ornaments: KYCOrnamentItem[];
+  payments: KYCPaymentItem[];
+  repledge?: KYCRePledgeInfo | null;
+}
+
+export interface CustomerLifetimeSummary {
+  totalPledges: number;
+  totalReleases: number;
+  totalHistoricalPledgeAmount: number;
+  currentActivePledges: number;
+  currentPrincipalOutstanding: number;
+  currentInterestOutstanding: number;
+  currentPenaltyOutstanding: number;
+  currentTotalOutstanding: number;
+  currentActiveGoldWeight: number;
+}
+
+export interface KYCConsultationData {
+  customer: Profile;
+  summary: CustomerLifetimeSummary;
+  pledgeHistory: CustomerPledgeHistoryItem[];
+  generatedAt: string;
+}
+
 
 

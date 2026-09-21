@@ -33,6 +33,11 @@ const COLLECTION = 'payments';
  *   3. Remaining amount clears outstanding interest
  *   4. Final remainder reduces principal
  */
+/**
+ * Calculate how a payment amount should be split between interest and principal.
+ * Business rule: Penalty is cleared first, interest is cleared second, remainder reduces principal.
+ * All math uses safe integer paise to prevent precision loss.
+ */
 export function calculatePaymentSplit(
   amount: number,
   outstandingInterest: number,
@@ -40,36 +45,45 @@ export function calculatePaymentSplit(
   penaltyAmount: number = 0,
   waiverAmount: number = 0
 ): PaymentSplit {
-  // Validation: reject negative values
   if (amount < 0) amount = 0;
   if (penaltyAmount < 0) penaltyAmount = 0;
   if (waiverAmount < 0) waiverAmount = 0;
 
-  // Step 1: Penalty is paid from the total amount first
-  const afterPenalty = Math.max(0, amount - penaltyAmount);
+  const toPaise = (v: number) => Math.round((v || 0) * 100);
+  const fromPaise = (p: number) => Math.round(p) / 100;
 
-  // Step 2: Waiver reduces outstanding interest (discount applied by admin)
-  const effectiveOutstandingInterest = Math.max(0, outstandingInterest - waiverAmount);
+  const amountPaise = toPaise(amount);
+  const penaltyPaise = toPaise(penaltyAmount);
+  const waiverPaise = toPaise(waiverAmount);
+  const interestDuePaise = toPaise(outstandingInterest);
+  const principalDuePaise = toPaise(remainingPrincipal);
+
+  // Step 1: Penalty is paid from the total amount first
+  const afterPenaltyPaise = Math.max(0, amountPaise - penaltyPaise);
+
+  // Step 2: Waiver reduces outstanding interest
+  const effectiveInterestDuePaise = Math.max(0, interestDuePaise - waiverPaise);
 
   // Step 3: Clear outstanding interest from remaining amount
-  const interestPortion = Math.min(afterPenalty, effectiveOutstandingInterest);
+  const interestPortionPaise = Math.min(afterPenaltyPaise, effectiveInterestDuePaise);
 
-  // Step 4: Remainder goes to principal reduction
-  const principalPortion = Math.max(0, afterPenalty - interestPortion);
+  // Step 4: Excess amount reduces principal (capped at remaining principal)
+  const excessPaise = Math.max(0, afterPenaltyPaise - interestPortionPaise);
+  const principalPortionPaise = Math.min(excessPaise, principalDuePaise);
 
-  const newRemainingPrincipal = Math.max(0, remainingPrincipal - principalPortion);
-  const newRemainingInterest = Math.max(0, effectiveOutstandingInterest - interestPortion);
-  const newOutstanding = newRemainingPrincipal + newRemainingInterest;
+  const newRemainingPrincipalPaise = Math.max(0, principalDuePaise - principalPortionPaise);
+  const newRemainingInterestPaise = Math.max(0, effectiveInterestDuePaise - interestPortionPaise);
+  const newOutstandingPaise = newRemainingPrincipalPaise + newRemainingInterestPaise;
 
-  const isFullSettlement = newRemainingPrincipal === 0 && newRemainingInterest === 0;
+  const isFullSettlement = newRemainingPrincipalPaise === 0 && newRemainingInterestPaise === 0;
 
   return {
     totalAmount: amount,
-    interestPortion: Math.round(interestPortion * 100) / 100,
-    principalPortion: Math.round(principalPortion * 100) / 100,
-    remainingPrincipal: Math.round(newRemainingPrincipal * 100) / 100,
-    remainingInterest: Math.round(newRemainingInterest * 100) / 100,
-    newOutstanding: Math.round(newOutstanding * 100) / 100,
+    interestPortion: fromPaise(interestPortionPaise),
+    principalPortion: fromPaise(principalPortionPaise),
+    remainingPrincipal: fromPaise(newRemainingPrincipalPaise),
+    remainingInterest: fromPaise(newRemainingInterestPaise),
+    newOutstanding: fromPaise(newOutstandingPaise),
     isFullSettlement,
   };
 }
@@ -125,6 +139,7 @@ export async function generateReleaseNumber(): Promise<string> {
 /**
  * Record a payment and update the associated loan balances in one Firestore
  * transaction, preventing concurrent cashiers from overwriting running totals.
+ * Includes idempotency key protection and integer paise precision.
  */
 export async function recordPayment(data: PaymentInsert): Promise<Payment> {
   if (!Number.isFinite(data.amount_paid) || data.amount_paid <= 0) {
@@ -138,9 +153,27 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
   if (!Number.isFinite(penaltyAmount) || !Number.isFinite(waiverAmount) || penaltyAmount < 0 || waiverAmount < 0) {
     throw new Error('Penalty and waiver amounts cannot be negative.');
   }
-  const toPaise = (amount: number) => Math.round(amount * 100);
+  const toPaise = (amount: number) => Math.round((amount || 0) * 100);
   if (toPaise(data.interest_portion) + toPaise(data.principal_portion) + toPaise(penaltyAmount) !== toPaise(data.amount_paid)) {
     throw new Error('Payment allocation must equal the amount received.');
+  }
+
+  // Idempotency check: if an idempotency key is provided and already exists, return that payment
+  if (data.idempotency_key) {
+    try {
+      const existingQ = query(
+        collection(db, COLLECTION),
+        where('idempotency_key', '==', data.idempotency_key)
+      );
+      const existingSnap = await getDocs(existingQ);
+      if (!existingSnap.empty) {
+        console.warn(`[Payment] Idempotent duplicate replay detected for key: ${data.idempotency_key}`);
+        const existingDoc = existingSnap.docs[0];
+        return { id: existingDoc.id, ...existingDoc.data() } as unknown as Payment;
+      }
+    } catch (idempErr) {
+      console.warn('Notice checking idempotency key:', idempErr);
+    }
   }
 
   // Assign rotating Tamil slogan for bill/receipt
@@ -160,6 +193,7 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
   const paymentRef = doc(collection(db, COLLECTION));
   const counterRef = doc(db, 'counters', 'receipt_number');
   const now = new Date().toISOString();
+
   const paymentData = await runTransaction(db, async (transaction) => {
     const loanSnap = await transaction.get(loanRef);
     if (!loanSnap.exists()) throw new Error('Loan not found. Cannot record payment.');
@@ -170,11 +204,14 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
 
     const totalPrincipalPaid = loan.total_principal_paid || 0;
     const remainingPrincipal = Math.max(0, (loan.principal_amount || 0) - totalPrincipalPaid);
-    const outstandingInterest = Math.max(0, loan.outstanding_interest || 0);
+    const dbOutstandingInterest = Math.max(0, loan.outstanding_interest || 0);
+    const snapshotOutstandingInterest = data.calculation_snapshot?.outstandingInterest || 0;
+    const effectiveOutstandingInterest = Math.max(dbOutstandingInterest, snapshotOutstandingInterest);
+
     if (toPaise(data.principal_portion) > toPaise(remainingPrincipal)) {
       throw new Error('Principal payment exceeds the remaining principal balance.');
     }
-    if (toPaise(data.interest_portion + waiverAmount) > toPaise(outstandingInterest)) {
+    if (toPaise(data.interest_portion + waiverAmount) > toPaise(effectiveOutstandingInterest)) {
       throw new Error('Interest payment and waiver exceed the outstanding interest balance.');
     }
 
@@ -185,6 +222,10 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
       transaction.set(counterRef, { value: next }, { merge: true });
       receiptNumber = `PGF-REC-${String(next).padStart(6, '0')}`;
     }
+
+    const newOutstandingInterest = Math.max(0, effectiveOutstandingInterest - data.interest_portion - waiverAmount);
+    const newTotalPrincipalPaid = totalPrincipalPaid + data.principal_portion;
+    const newRemainingPrincipal = Math.max(0, (loan.principal_amount || 0) - newTotalPrincipalPaid);
 
     const savedPayment = cleanFirestorePayload({
       ...data,
@@ -198,21 +239,35 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
       slogan_id: sloganId || null,
       slogan_text: sloganText || null,
       payment_date: data.payment_date || now,
+      // Precise integer paise fields for enterprise financial auditing
+      amount_received_paise: toPaise(data.amount_paid),
+      penalty_paid_paise: toPaise(penaltyAmount),
+      interest_paid_paise: toPaise(data.interest_portion),
+      principal_paid_paise: toPaise(data.principal_portion),
+      principal_before_paise: toPaise(remainingPrincipal),
+      principal_after_paise: toPaise(newRemainingPrincipal),
+      interest_before_paise: toPaise(effectiveOutstandingInterest),
+      interest_after_paise: toPaise(newOutstandingInterest),
+      idempotency_key: data.idempotency_key || null,
+      calculation_snapshot: data.calculation_snapshot || null,
+      status: 'POSTED',
+      collected_by: data.collected_by || null,
+      branch_id: data.branch_id || loan.branch_id || null,
       created_at: now,
     });
-    const newOutstandingInterest = Math.max(0, outstandingInterest - data.interest_portion - waiverAmount);
-    const newTotalPrincipalPaid = totalPrincipalPaid + data.principal_portion;
-    const newRemainingPrincipal = Math.max(0, (loan.principal_amount || 0) - newTotalPrincipalPaid);
+
     const loanUpdate: Record<string, unknown> = {
       total_interest_paid: (loan.total_interest_paid || 0) + data.interest_portion,
       total_principal_paid: newTotalPrincipalPaid,
       outstanding_interest: newOutstandingInterest,
+      last_interest_calc_date: data.payment_date ? data.payment_date.split('T')[0] : now.split('T')[0],
       updated_at: now,
     };
     if (newRemainingPrincipal === 0 && newOutstandingInterest === 0) {
       loanUpdate.status = 'Settled';
       loanUpdate.closed_at = now;
     }
+
     transaction.set(paymentRef, savedPayment);
     transaction.update(loanRef, cleanFirestorePayload(loanUpdate));
     return savedPayment;
@@ -220,13 +275,36 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
 
   const payment = { id: paymentRef.id, ...paymentData } as unknown as Payment;
 
-  // 3. Mark interest accrual records as paid (non-critical, after commit)
+  // Mark interest accrual records as paid (non-critical, after commit)
   if (data.interest_portion > 0) {
     try {
       await markInterestAsPaid(data.loan_id, paymentRef.id, data.interest_portion);
     } catch (err) {
       console.error('[Payment] Failed to mark interest accruals as paid:', err);
     }
+  }
+
+  // Audit log entry
+  try {
+    await addDoc(collection(db, 'audit_logs'), {
+      actor_id: data.collected_by || 'cashier',
+      actor_name: data.collected_by || 'Cashier Officer',
+      actor_role: 'Cashier',
+      action_type: 'Payment Posted',
+      affected_entity: 'payments',
+      affected_entity_id: paymentRef.id,
+      details: {
+        loan_id: data.loan_id,
+        amount_paid: data.amount_paid,
+        interest_portion: data.interest_portion,
+        principal_portion: data.principal_portion,
+        penalty_amount: penaltyAmount,
+        receipt_number: payment.receipt_number,
+      },
+      timestamp: now,
+    });
+  } catch (auditErr) {
+    console.warn('Audit logging notice:', auditErr);
   }
 
   return payment;
@@ -344,9 +422,19 @@ export async function recordLoanRelease(data: {
   const now = new Date().toISOString();
   const effectiveReleaseDate = data.release_date || now;
 
-  // Fetch all gold collateral items for this loan
+  // Fetch all gold collateral items for this loan and enforce bank re-pledge custody lock (§13.4)
   const goldQ = query(collection(db, 'gold_collateral'), where('loan_id', '==', data.loan_id));
   const goldSnap = await getDocs(goldQ);
+
+  for (const gDoc of goldSnap.docs) {
+    const gData = gDoc.data();
+    const custody = (gData.custody_location || '').toLowerCase();
+    if (custody.includes('bank') || gData.status === 'RePledged' || gData.status === 'Repledged') {
+      throw new Error(
+        `CUSTODY_LOCK: Collateral ornament "${gData.item_description || gDoc.id}" is currently pledged with an institutional bank (${gData.custody_location || 'Bank'}). You must first settle the bank re-pledge and return the gold to PGF Safe before releasing it to the customer.`
+      );
+    }
+  }
 
   const batch = writeBatch(db);
   const paymentRef = doc(collection(db, COLLECTION));
@@ -424,6 +512,92 @@ export async function recordLoanRelease(data: {
   }
 
   return { payment: paymentRecord, release_number: releaseNumber, loan: { ...loan, ...loanUpdate } };
+}
+
+/**
+ * Authorized Payment Reversal (Audit-safe, never direct delete).
+ * Reverts loan balance, marks payment status as REVERSED, and logs audit trail.
+ */
+export async function reversePayment(
+  paymentId: string,
+  actor: { id: string; name: string; role: string },
+  reason: string
+): Promise<{ success: boolean; reversedPayment: Payment }> {
+  if (!reason || !reason.trim()) {
+    throw new Error('A valid reason is required to reverse a payment.');
+  }
+
+  const paymentRef = doc(db, COLLECTION, paymentId);
+  const now = new Date().toISOString();
+
+  const updatedPayment: any = await runTransaction(db, async (transaction) => {
+    const pSnap = await transaction.get(paymentRef);
+    if (!pSnap.exists()) throw new Error('Payment record not found.');
+    const payment = pSnap.data();
+
+    if (payment.status === 'REVERSED') {
+      throw new Error('This payment has already been reversed.');
+    }
+
+    const loanRef = doc(db, 'loans', payment.loan_id);
+    const loanSnap = await transaction.get(loanRef);
+    if (!loanSnap.exists()) throw new Error('Associated loan not found.');
+    const loan = loanSnap.data();
+
+    // Roll back balances
+    const newTotalInterestPaid = Math.max(0, (loan.total_interest_paid || 0) - (payment.interest_portion || 0));
+    const newTotalPrincipalPaid = Math.max(0, (loan.total_principal_paid || 0) - (payment.principal_portion || 0));
+    const newOutstandingInterest = (loan.outstanding_interest || 0) + (payment.interest_portion || 0);
+
+    const loanUpdate: Record<string, any> = {
+      total_interest_paid: newTotalInterestPaid,
+      total_principal_paid: newTotalPrincipalPaid,
+      outstanding_interest: newOutstandingInterest,
+      updated_at: now,
+    };
+
+    if (loan.status === 'Settled') {
+      loanUpdate.status = 'Active';
+      loanUpdate.closed_at = null;
+    }
+
+    const paymentUpdate = {
+      status: 'REVERSED',
+      reversal_reason: reason,
+      reversed_by: actor.name || actor.id,
+      reversed_at: now,
+      updated_at: now,
+    };
+
+    transaction.update(paymentRef, cleanFirestorePayload(paymentUpdate));
+    transaction.update(loanRef, cleanFirestorePayload(loanUpdate));
+
+    return { ...payment, ...paymentUpdate };
+  });
+
+  // Audit Log
+  try {
+    await addDoc(collection(db, 'audit_logs'), {
+      actor_id: actor.id,
+      actor_name: actor.name,
+      actor_role: actor.role,
+      action_type: 'Payment Reversed',
+      affected_entity: 'payments',
+      affected_entity_id: paymentId,
+      reason,
+      details: {
+        payment_id: paymentId,
+        loan_id: updatedPayment.loan_id,
+        amount_reversed: updatedPayment.amount_paid,
+        receipt_number: updatedPayment.receipt_number,
+      },
+      timestamp: now,
+    });
+  } catch (err) {
+    console.warn('Audit log write error:', err);
+  }
+
+  return { success: true, reversedPayment: updatedPayment as unknown as Payment };
 }
 
 /**

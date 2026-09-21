@@ -17,7 +17,84 @@ import {
 } from 'firebase/firestore';
 import type { InterestAccrual } from '@/types/database';
 
-const COLLECTION = 'interest_accruals';
+export const COLLECTION = 'interest_accruals';
+
+export function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+export function getDaysInYear(year: number): number {
+  return isLeapYear(year) ? 366 : 365;
+}
+
+export function toPaise(amount: number): number {
+  return Math.round((amount || 0) * 100);
+}
+
+export function fromPaise(paise: number): number {
+  return Math.round(paise) / 100;
+}
+
+export interface LoanInterestSnapshot {
+  loanId: string;
+  loanNumber: string;
+  asOfDate: string;
+  originationDate: string;
+  daysElapsed: number;
+  principalAmount: number;
+  currentPrincipal: number;
+  annualRateApr: number;
+  monthsCompleted: number;
+  fractionalMonths: number;
+  totalAccruedInterest: number;
+  totalInterestPaid: number;
+  outstandingInterest: number;
+  penaltyAmount: number;
+  totalOutstanding: number;
+  isLeapYearEncountered: boolean;
+  dailyRateApprox: number;
+  calculationDate: string;
+}
+
+/**
+ * Calculate dynamic days elapsed and completed months between two dates.
+ * Calendar-aware: calculates completed calendar months and elapsed days.
+ */
+export function calculateDynamicDaysAndMonths(
+  startDateStr: string | Date,
+  endDateStr?: string | Date
+): {
+  daysElapsed: number;
+  monthsCompleted: number;
+  fractionalMonths: number;
+} {
+  const start = new Date(startDateStr);
+  const end = endDateStr ? new Date(endDateStr) : new Date();
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  if (end <= start) {
+    return { daysElapsed: 0, monthsCompleted: 0, fractionalMonths: 0 };
+  }
+
+  const diffTime = end.getTime() - start.getTime();
+  const daysElapsed = Math.max(0, Math.floor(diffTime / (1000 * 60 * 60 * 24)));
+
+  let monthsCompleted = (end.getFullYear() - start.getFullYear()) * 12 + (end.getMonth() - start.getMonth());
+  if (end.getDate() < start.getDate()) {
+    monthsCompleted--;
+  }
+  monthsCompleted = Math.max(0, monthsCompleted);
+
+  const fractionalMonths = Math.round((daysElapsed / 30.4375) * 10) / 10;
+
+  return {
+    daysElapsed,
+    monthsCompleted,
+    fractionalMonths,
+  };
+}
 
 /**
  * Calculate daily interest for a single loan.
@@ -31,11 +108,185 @@ export function calculateDailyInterest(
 ): number {
   const refDate = date || new Date();
   const year = refDate.getFullYear();
-  const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
-  const daysInYear = isLeapYear ? 366 : 365;
+  const daysInYear = getDaysInYear(year);
 
   const dailyAmount = (principalBalance * (annualRate / 100)) / daysInYear;
   return Math.round(dailyAmount * 10000) / 10000; // 4 decimal precision
+}
+
+/**
+ * Calculate accrued interest over an arbitrary date range taking into account
+ * leap years and changes in principal balance over time.
+ * All financial math uses safe integer paise to eliminate floating-point drift.
+ */
+export function calculateAccruedInterest(params: {
+  principalAmount: number;
+  annualRateApr: number;
+  startDate: string | Date;
+  endDate: string | Date;
+  principalRepayments?: Array<{ date: string; amount: number }>;
+}): {
+  totalAccruedPaise: number;
+  daysElapsed: number;
+  isLeapYearEncountered: boolean;
+  dailyBreakdown: Array<{ date: string; principal: number; dailyPaise: number }>;
+} {
+  const start = new Date(params.startDate);
+  const end = new Date(params.endDate);
+
+  start.setHours(0, 0, 0, 0);
+  end.setHours(0, 0, 0, 0);
+
+  if (end <= start) {
+    return {
+      totalAccruedPaise: 0,
+      daysElapsed: 0,
+      isLeapYearEncountered: false,
+      dailyBreakdown: [],
+    };
+  }
+
+  // Sort principal repayments by date ascending
+  const repayments = (params.principalRepayments || [])
+    .map((r) => ({
+      date: new Date(r.date),
+      amountPaise: toPaise(r.amount),
+      applied: false,
+    }))
+    .sort((a, b) => a.date.getTime() - b.date.getTime());
+
+  let totalAccruedPaise = 0;
+  let daysElapsed = 0;
+  let isLeapYearEncountered = false;
+  const dailyBreakdown: Array<{ date: string; principal: number; dailyPaise: number }> = [];
+
+  let currentPrincipalPaise = toPaise(params.principalAmount);
+  const currentDate = new Date(start);
+
+  while (currentDate < end) {
+    const dateStr = currentDate.toISOString().split('T')[0];
+    const year = currentDate.getFullYear();
+    const leap = isLeapYear(year);
+    if (leap) isLeapYearEncountered = true;
+    const daysInYear = leap ? 366 : 365;
+
+    // Apply principal repayments that occurred on or before this day
+    for (const r of repayments) {
+      if (!r.applied && r.date <= currentDate) {
+        currentPrincipalPaise = Math.max(0, currentPrincipalPaise - r.amountPaise);
+        r.applied = true;
+      }
+    }
+
+    // Daily interest formula: Principal * (APR / 100) / DaysInYear
+    const dailyPaiseFloat = (currentPrincipalPaise * (params.annualRateApr / 100)) / daysInYear;
+    const dailyPaise = Math.round(dailyPaiseFloat);
+
+    totalAccruedPaise += dailyPaise;
+    daysElapsed++;
+
+    dailyBreakdown.push({
+      date: dateStr,
+      principal: fromPaise(currentPrincipalPaise),
+      dailyPaise,
+    });
+
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  return {
+    totalAccruedPaise,
+    daysElapsed,
+    isLeapYearEncountered,
+    dailyBreakdown,
+  };
+}
+
+/**
+ * Generate a comprehensive interest calculation snapshot for a loan as of any date.
+ * Used consistently across billing, payments, renewals, statements, and receipts.
+ */
+export function calculateLoanInterestSnapshot(
+  loan: any,
+  asOfDateStr?: string,
+  paymentsHistory?: any[]
+): LoanInterestSnapshot {
+  const originationDate = loan.origination_date
+    ? loan.origination_date.split('T')[0]
+    : new Date().toISOString().split('T')[0];
+  const asOfDate = asOfDateStr
+    ? asOfDateStr.split('T')[0]
+    : new Date().toISOString().split('T')[0];
+
+  const principalAmount = loan.principal_amount || 0;
+  const totalPrincipalPaid = loan.total_principal_paid || 0;
+  const currentPrincipal = Math.max(0, principalAmount - totalPrincipalPaid);
+  const apr = loan.interest_rate_apr || 18;
+
+  // Extract principal repayments from paymentsHistory if available
+  const repayments: Array<{ date: string; amount: number }> = [];
+  if (Array.isArray(paymentsHistory)) {
+    for (const p of paymentsHistory) {
+      if ((p.principal_portion || 0) > 0) {
+        repayments.push({
+          date: p.payment_date || p.created_at || originationDate,
+          amount: p.principal_portion,
+        });
+      }
+    }
+  }
+
+  const calculation = calculateAccruedInterest({
+    principalAmount,
+    annualRateApr: apr,
+    startDate: originationDate,
+    endDate: asOfDate,
+    principalRepayments: repayments,
+  });
+
+  const totalAccruedInterest = fromPaise(calculation.totalAccruedPaise);
+  const totalInterestPaid = loan.total_interest_paid || 0;
+
+  let outstandingInterest = Math.max(
+    0,
+    Math.round(calculation.totalAccruedPaise - toPaise(totalInterestPaid)) / 100
+  );
+
+  // If the loan has an active tracked outstanding_interest in DB that is higher, respect it
+  if (loan.outstanding_interest && loan.outstanding_interest > outstandingInterest) {
+    outstandingInterest = loan.outstanding_interest;
+  }
+
+  const penaltyAmount = loan.penalty_amount || 0;
+  const totalOutstanding = Math.round((currentPrincipal + outstandingInterest + penaltyAmount) * 100) / 100;
+
+  const year = new Date().getFullYear();
+  const daysInYear = getDaysInYear(year);
+  const dailyRateApprox = Math.round(((currentPrincipal * (apr / 100)) / daysInYear) * 100) / 100;
+
+  const dynamicTime = calculateDynamicDaysAndMonths(originationDate, asOfDate);
+  const daysElapsed = calculation.daysElapsed || dynamicTime.daysElapsed;
+
+  return {
+    loanId: loan.id || '',
+    loanNumber: loan.loan_number || '',
+    asOfDate,
+    originationDate,
+    daysElapsed,
+    monthsCompleted: dynamicTime.monthsCompleted,
+    fractionalMonths: dynamicTime.fractionalMonths,
+    principalAmount,
+    currentPrincipal,
+    annualRateApr: apr,
+    totalAccruedInterest,
+    totalInterestPaid,
+    outstandingInterest,
+    penaltyAmount,
+    totalOutstanding,
+    isLeapYearEncountered: calculation.isLeapYearEncountered,
+    dailyRateApprox,
+    calculationDate: new Date().toISOString(),
+  };
 }
 
 /**

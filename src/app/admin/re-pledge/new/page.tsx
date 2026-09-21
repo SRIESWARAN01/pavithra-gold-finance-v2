@@ -48,6 +48,8 @@ export default function NewRePledgePage() {
   const [bankName, setBankName] = useState('');
   const [bankBranch, setBankBranch] = useState('');
   const [bankAccountNumber, setBankAccountNumber] = useState('');
+  const [pledgeName, setPledgeName] = useState('Pavithra Gold Finance / Branch Signatory');
+  const [bankLoanNumber, setBankLoanNumber] = useState('');
   const [pledgeDate, setPledgeDate] = useState(new Date().toISOString().split('T')[0]);
   const [bankPledgeAmount, setBankPledgeAmount] = useState<string>('');
   const [bankInterestRate, setBankInterestRate] = useState<string>('8.5');
@@ -227,6 +229,8 @@ export default function NewRePledgePage() {
           bank_name: bankName.trim(),
           bank_branch: bankBranch.trim(),
           bank_account_number: bankAccountNumber.trim(),
+          pledge_name: pledgeName.trim() || undefined,
+          bank_loan_number: bankLoanNumber.trim() || undefined,
           pledge_date: pledgeDate,
           bank_pledge_amount: pledgeAmt,
           bank_interest_rate: ratePct,
@@ -526,6 +530,34 @@ export default function NewRePledgePage() {
                 placeholder="e.g. 409988221144"
                 value={bankAccountNumber}
                 onChange={(e) => setBankAccountNumber(e.target.value)}
+                className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              />
+            </div>
+
+            {/* Name Under Which Pledged (Pledgee Name) */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                Name Under Which Pledged (Pledgee Name)
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. Pavithra Gold Finance / Branch Signatory"
+                value={pledgeName}
+                onChange={(e) => setPledgeName(e.target.value)}
+                className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+              />
+            </div>
+
+            {/* Bank Loan / Pledge Number */}
+            <div>
+              <label className="block text-xs font-bold text-gray-700 uppercase tracking-wider mb-1.5">
+                Bank Loan / Pledge Number
+              </label>
+              <input
+                type="text"
+                placeholder="e.g. CB-PLEDGE-99118"
+                value={bankLoanNumber}
+                onChange={(e) => setBankLoanNumber(e.target.value)}
                 className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
               />
             </div>

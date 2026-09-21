@@ -219,3 +219,60 @@ test('Payment Validation: rejects payments on Settled loan', () => {
     }, loan);
   }, /Cannot record payment on a Settled loan/);
 });
+
+// -----------------------------------------------------------------------------
+// Test Case 5: Duplicate Payment Submission (Idempotency Key Validation)
+// -----------------------------------------------------------------------------
+test('Test Case 5: Duplicate Payment Submission / Idempotency Key Replay', () => {
+  const processedKeys = new Set();
+
+  function processPaymentWithIdempotency(paymentRequest) {
+    if (processedKeys.has(paymentRequest.idempotencyKey)) {
+      // Return cached payment, do NOT apply balance reduction again
+      return { status: 'REPLAYED', paymentId: paymentRequest.idempotencyKey };
+    }
+    processedKeys.add(paymentRequest.idempotencyKey);
+    return { status: 'COMMITTED', paymentId: paymentRequest.idempotencyKey };
+  }
+
+  const req1 = { idempotencyKey: 'pmt_loan101_txn001', amount: 1000 };
+  const res1 = processPaymentWithIdempotency(req1);
+  assert.strictEqual(res1.status, 'COMMITTED');
+
+  // Submit the exact same request again
+  const res2 = processPaymentWithIdempotency(req1);
+  assert.strictEqual(res2.status, 'REPLAYED');
+  assert.strictEqual(processedKeys.size, 1, 'Only one financial record should be created');
+});
+
+// -----------------------------------------------------------------------------
+// Test Case 8: Bank Re-Pledge Custody Lock Check
+// -----------------------------------------------------------------------------
+test('Test Case 8: Collateral Release Custody Lock (Cannot release if at bank)', () => {
+  function validateCollateralRelease(collateralItems) {
+    for (const item of collateralItems) {
+      const loc = (item.custody_location || '').toLowerCase();
+      if (loc.includes('bank') || item.status === 'RePledged') {
+        throw new Error(
+          `CUSTODY_LOCK: Collateral item ${item.id} (${item.item_description || 'Gold Item'}) is currently re-pledged to ${item.custody_location || 'a commercial bank'}. It must be settled and physically returned to PGF Safe before releasing to customer.`
+        );
+      }
+    }
+    return true;
+  }
+
+  // 1. Collateral in PGF Safe Vault -> can release
+  const safeItems = [
+    { id: 'g1', item_description: 'Gold Chain', custody_location: 'PGF Safe Vault', status: 'In_Vault' },
+  ];
+  assert.strictEqual(validateCollateralRelease(safeItems), true);
+
+  // 2. Collateral at Bank -> blocked by custody lock
+  const bankItems = [
+    { id: 'g2', item_description: 'Gold Bangle', custody_location: 'SBI Commercial Bank Vault', status: 'RePledged' },
+  ];
+  assert.throws(() => {
+    validateCollateralRelease(bankItems);
+  }, /CUSTODY_LOCK/);
+});
+

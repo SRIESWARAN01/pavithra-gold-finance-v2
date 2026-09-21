@@ -36,10 +36,15 @@ export interface PdfParams {
     | 'balance_sheet'
     | 'profit_loss'
     | 'monthly_auditor_report'
+    | 'renewal_receipt'
+    | 'renewal'
+    | 'repledge'
+    | 'bank_repledge'
     | 'report';
   loanId?: string | null;
   paymentId?: string | null;
   customerId?: string | null;
+  repledgeId?: string | null;
   branchId?: string | null;
   report?: string | null;
   month?: string | null;
@@ -47,6 +52,7 @@ export interface PdfParams {
   download?: boolean;
   filename?: string | null;
   token?: string | null;
+  format?: 'a4' | 'thermal' | null;
   payload?: any;
 }
 
@@ -59,12 +65,14 @@ export function getPdfApiUrl(params: PdfParams, token?: string | null): string {
   if (params.loanId) queryParams.set('loanId', params.loanId);
   if (params.paymentId) queryParams.set('paymentId', params.paymentId);
   if (params.customerId) queryParams.set('customerId', params.customerId);
+  if (params.repledgeId) queryParams.set('repledgeId', params.repledgeId);
   if (params.branchId) queryParams.set('branchId', params.branchId);
   if (params.report) queryParams.set('report', params.report);
   if (params.month) queryParams.set('month', params.month);
   if (params.amount !== undefined && params.amount !== null) queryParams.set('amount', String(params.amount));
   if (params.download) queryParams.set('download', 'true');
   if (params.filename) queryParams.set('filename', params.filename);
+  if (params.format) queryParams.set('format', params.format);
 
   const effectiveToken = token || params.token;
   if (effectiveToken) {
@@ -111,6 +119,7 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
       loanId: params.loanId,
       paymentId: params.paymentId,
       customerId: params.customerId,
+      repledgeId: params.repledgeId,
       branchId: params.branchId,
       report: params.report,
       month: params.month,
@@ -185,6 +194,7 @@ export async function printPdfDocument(params: PdfParams): Promise<void> {
       loanId: params.loanId,
       paymentId: params.paymentId,
       customerId: params.customerId,
+      repledgeId: params.repledgeId,
       branchId: params.branchId,
       report: params.report,
       month: params.month,

@@ -20,10 +20,14 @@ import {
   ExternalLink,
   DollarSign,
   Printer,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Download,
+  Eye
 } from 'lucide-react';
 import { getBankRePledgeById, approveBankRePledge, recordBankRepledgeRelease } from '@/lib/db/repledge';
 import { getCurrentProfile } from '@/lib/auth';
+import PDFPreviewModal from '@/components/PDFPreviewModal';
+import { getPdfApiUrl, downloadPdfDocument, printPdfDocument } from '@/lib/pdfHelper';
 import type { BankRePledge, BankRePledgeStatus, Profile } from '@/types/database';
 
 export default function BankRePledgeDetailPage() {
@@ -35,6 +39,11 @@ export default function BankRePledgeDetailPage() {
   const [loading, setLoading] = useState(true);
   const [currentProfile, setCurrentProfile] = useState<Profile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // PDF Preview & Receipt State
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [printing, setPrinting] = useState(false);
 
   // Approval Modal / State
   const [approving, setApproving] = useState(false);
@@ -228,12 +237,67 @@ export default function BankRePledgeDetailPage() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          {/* Re-Pledge Receipt Actions */}
+          <button
+            type="button"
+            onClick={() => setIsPreviewOpen(true)}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border border-slate-200 cursor-pointer"
+          >
+            <Eye size={14} /> View Receipt
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                setPrinting(true);
+                await printPdfDocument({
+                  type: 'repledge',
+                  repledgeId: repledge.id,
+                  loanId: repledge.loan_id,
+                });
+              } catch (err) {
+                console.error(err);
+              } finally {
+                setPrinting(false);
+              }
+            }}
+            disabled={printing}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border border-slate-200 disabled:opacity-50 cursor-pointer"
+          >
+            <Printer size={14} /> {printing ? 'Preparing...' : 'Print'}
+          </button>
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                setDownloading(true);
+                await downloadPdfDocument(
+                  {
+                    type: 'repledge',
+                    repledgeId: repledge.id,
+                    loanId: repledge.loan_id,
+                    download: true,
+                  },
+                  `repledge_${repledge.repledge_number}.pdf`
+                );
+              } catch (err) {
+                console.error(err);
+              } finally {
+                setDownloading(false);
+              }
+            }}
+            disabled={downloading}
+            className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 rounded-xl text-xs font-bold shadow-xs transition-all flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+          >
+            <Download size={14} /> {downloading ? 'Downloading...' : 'Download PDF'}
+          </button>
+
           {repledge.status === 'Pending Approval' && isAdmin && (
             <button
               onClick={handleApprove}
               disabled={approving}
-              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all disabled:opacity-50 flex items-center gap-1.5"
+              className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all disabled:opacity-50 flex items-center gap-1.5 cursor-pointer"
             >
               <CheckCircle2 size={14} />
               {approving ? 'Approving...' : 'Approve Re-Pledge'}
@@ -243,7 +307,7 @@ export default function BankRePledgeDetailPage() {
           {(repledge.status === 'Active' || repledge.status === 'Pledged with Bank') && (
             <button
               onClick={() => setShowReleaseModal(true)}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5"
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition-all flex items-center gap-1.5 cursor-pointer"
             >
               <RotateCcw size={14} />
               Release Gold to PGF Safe
@@ -612,6 +676,20 @@ export default function BankRePledgeDetailPage() {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Re-Pledge Receipt PDF Preview Modal */}
+      {isPreviewOpen && (
+        <PDFPreviewModal
+          isOpen={isPreviewOpen}
+          onClose={() => setIsPreviewOpen(false)}
+          pdfUrl={getPdfApiUrl({
+            type: 'repledge',
+            repledgeId: repledge.id,
+            loanId: repledge.loan_id,
+          })}
+          title={`Bank Re-Pledge Official Receipt — ${repledge.repledge_number}`}
+        />
       )}
     </div>
   );

@@ -17,7 +17,8 @@ import {
   FileText
 } from 'lucide-react';
 import { getCurrentProfile } from '@/lib/auth';
-import { recordPayment } from '@/lib/db/payments';
+import { recordPayment, calculatePaymentSplit } from '@/lib/db/payments';
+import { calculateLoanInterestSnapshot } from '@/lib/db/interest';
 import { auditCreate } from '@/lib/db/audit';
 import { createNotification } from '@/lib/db/notifications';
 import { downloadPdfDocument, getPdfApiUrl } from '@/lib/pdfHelper';
@@ -87,35 +88,52 @@ export default function RecordRepaymentModal({
     return loans.find((l) => l.id === selectedLoanId) || null;
   }, [loans, selectedLoanId]);
 
+  // Dynamic Interest Snapshot
+  const interestSnapshot = useMemo(() => {
+    if (!currentLoan) return null;
+    return calculateLoanInterestSnapshot({
+      id: currentLoan.id,
+      principal_amount: currentLoan.principal_amount || 0,
+      total_principal_paid: currentLoan.total_principal_paid || 0,
+      interest_rate_apr: currentLoan.interest_rate_apr || 18,
+      origination_date: currentLoan.origination_date || new Date().toISOString(),
+      maturity_date: currentLoan.maturity_date || new Date().toISOString(),
+      total_interest_paid: currentLoan.total_interest_paid || 0,
+      outstanding_interest: currentLoan.outstanding_interest,
+    } as any);
+  }, [currentLoan]);
+
   // Live Loan Balances
   const loanPrincipal = currentLoan?.principal_amount || 0;
-  const totalPrincipalPaid = currentLoan?.total_principal_paid || 0;
-  const remainingPrincipal = Math.max(0, loanPrincipal - totalPrincipalPaid);
-  const outstandingInterest = currentLoan?.outstanding_interest || 0;
+  const remainingPrincipal = interestSnapshot 
+    ? interestSnapshot.currentPrincipal 
+    : Math.max(0, loanPrincipal - (currentLoan?.total_principal_paid || 0));
+  const outstandingInterest = interestSnapshot 
+    ? interestSnapshot.outstandingInterest 
+    : (currentLoan?.outstanding_interest || 0);
   const totalDue = remainingPrincipal + outstandingInterest;
 
-  // Strict Payment Allocation:
-  // Payment → Interest First → Remaining Amount → Principal
+  // Strict Payment Allocation using calculatePaymentSplit:
+  // Payment → Penalty → Interest → Principal
   const allocation = useMemo(() => {
     const amt = typeof paymentAmount === 'number' ? Math.max(0, paymentAmount) : 0;
-    const interestPortion = Math.min(amt, outstandingInterest);
-    const principalPortion = Math.min(Math.max(0, amt - interestPortion), remainingPrincipal);
-    const excessAmount = Math.max(0, amt - interestPortion - principalPortion);
-
-    const newOutstandingInterest = Math.max(0, outstandingInterest - interestPortion);
-    const newRemainingPrincipal = Math.max(0, remainingPrincipal - principalPortion);
-    const newTotalOutstanding = newRemainingPrincipal + newOutstandingInterest;
-    const isFullSettlement = remainingPrincipal > 0 && newTotalOutstanding <= 0;
+    const split = calculatePaymentSplit(
+      amt,
+      outstandingInterest,
+      remainingPrincipal,
+      0,
+      0
+    );
 
     return {
       amt,
-      interestPortion: Math.round(interestPortion * 100) / 100,
-      principalPortion: Math.round(principalPortion * 100) / 100,
-      excessAmount: Math.round(excessAmount * 100) / 100,
-      newOutstandingInterest: Math.round(newOutstandingInterest * 100) / 100,
-      newRemainingPrincipal: Math.round(newRemainingPrincipal * 100) / 100,
-      newTotalOutstanding: Math.round(newTotalOutstanding * 100) / 100,
-      isFullSettlement,
+      interestPortion: split.interestPortion,
+      principalPortion: split.principalPortion,
+      penaltyPortion: 0,
+      newOutstandingInterest: split.remainingInterest,
+      newRemainingPrincipal: split.remainingPrincipal,
+      newTotalOutstanding: split.newOutstanding,
+      isFullSettlement: split.isFullSettlement,
     };
   }, [paymentAmount, outstandingInterest, remainingPrincipal]);
 
@@ -169,6 +187,7 @@ export default function RecordRepaymentModal({
         remarks: remarks.trim()
           ? `${remarks.trim()} | Ref: ${transactionRef || 'Counter'}`
           : `Ref: ${transactionRef || 'Counter Payment'}`,
+        calculation_snapshot: interestSnapshot || undefined,
       });
 
       // 2. Create Audit Log
@@ -182,7 +201,7 @@ export default function RecordRepaymentModal({
         principal_portion: allocation.principalPortion,
         receipt_number: recorded.receipt_number,
         mode: paymentMode,
-        allocation: 'Payment -> Interest First -> Principal',
+        allocation: 'Payment -> Penalty -> Interest -> Principal',
       });
 
       // 3. Trigger Customer Notification
@@ -221,6 +240,13 @@ export default function RecordRepaymentModal({
     setIsPreviewOpen(true);
   };
 
+  const handlePreviewThermalBill = () => {
+    if (!completedPayment) return;
+    setPreviewUrl(getPdfApiUrl({ type: 'receipt', paymentId: completedPayment.id, format: 'thermal' }));
+    setPreviewTitle(`80mm Thermal Receipt - ${completedPayment.receipt_number}`);
+    setIsPreviewOpen(true);
+  };
+
   return (
     <>
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
@@ -234,7 +260,7 @@ export default function RecordRepaymentModal({
               <div>
                 <h2 className="text-lg font-bold font-outfit">Record Loan Repayment</h2>
                 <p className="text-xs text-blue-100">
-                  Payment → Interest First → Remaining Amount → Principal
+                  Payment → Penalty → Interest First → Principal
                 </p>
               </div>
             </div>
@@ -292,27 +318,35 @@ export default function RecordRepaymentModal({
               </div>
 
               {/* Bill Action Buttons */}
-              <div className="flex flex-col sm:flex-row gap-3 pt-2">
+              <div className="flex flex-col sm:flex-row gap-2.5 pt-2">
                 <button
                   type="button"
                   onClick={handleDownloadBill}
-                  className="flex-1 py-3 px-4 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 shadow-sm"
+                  className="flex-1 py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm"
                 >
                   <Download className="w-4 h-4" />
-                  Download Bill PDF
+                  A4 PDF
                 </button>
                 <button
                   type="button"
                   onClick={handlePreviewBill}
-                  className="flex-1 py-3 px-4 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-2 border border-gray-300"
+                  className="flex-1 py-2.5 px-3 bg-gray-100 hover:bg-gray-200 text-gray-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border border-gray-300"
                 >
                   <Printer className="w-4 h-4" />
-                  Preview & Print Bill
+                  Preview A4
+                </button>
+                <button
+                  type="button"
+                  onClick={handlePreviewThermalBill}
+                  className="flex-1 py-2.5 px-3 bg-amber-50 hover:bg-amber-100 text-amber-800 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 border border-amber-200"
+                >
+                  <Printer className="w-4 h-4" />
+                  80mm Thermal
                 </button>
                 <button
                   type="button"
                   onClick={onClose}
-                  className="py-3 px-5 border border-gray-300 hover:bg-gray-100 text-gray-700 rounded-xl text-xs font-semibold transition"
+                  className="py-2.5 px-4 border border-gray-300 hover:bg-gray-100 text-gray-700 rounded-xl text-xs font-semibold transition"
                 >
                   Done
                 </button>

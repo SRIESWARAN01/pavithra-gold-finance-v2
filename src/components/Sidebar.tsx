@@ -25,7 +25,10 @@ import {
   X,
   ChevronsLeft,
   ChevronsRight,
-  ShieldCheck
+  ShieldCheck,
+  RefreshCw,
+  Layers,
+  UserCheck
 } from 'lucide-react';
 import { auth } from '@/lib/firebase';
 import Logo from '@/components/Logo';
@@ -69,8 +72,10 @@ export default function Sidebar({ isOpen = false, onClose }: SidebarProps) {
         { name: 'Dashboard', path: '/admin/dashboard', icon: LayoutDashboard },
         { name: 'Approvals Queue', path: '/admin/approvals', icon: ShieldCheck },
         { name: 'Customers', path: '/admin/customers', icon: Users },
+        { name: 'KYC Consultation', path: '/admin/gold-loan/kyc-consultation', icon: UserCheck },
         { name: 'Appraisal & Loans', path: '/admin/loans/new', icon: Coins },
         { name: 'Payments Ledger', path: '/admin/payments', icon: Receipt },
+        { name: 'Loan Renewal', path: '/admin/renewal', icon: RefreshCw },
         { name: 'Bank Re-Pledge', path: '/admin/re-pledge', icon: Building2 },
         { name: 'Ticket Scanner', path: '/admin/loans/scan', icon: QrCode },
         { name: 'Auction Manager', path: '/admin/auctions', icon: Gavel },
@@ -79,6 +84,9 @@ export default function Sidebar({ isOpen = false, onClose }: SidebarProps) {
     {
       title: 'Finance',
       items: [
+        { name: 'Expenses', path: '/admin/expenses', icon: Receipt },
+        { name: 'Profit & Loss', path: '/admin/pnl', icon: BarChart3 },
+        { name: 'Consolidated', path: '/admin/consolidated', icon: Layers },
         { name: 'Live Statement', path: '/admin/statement', icon: FileText },
         { name: 'Billing Engine', path: '/admin/billing', icon: Receipt },
         { name: 'Accounting ERP', path: '/admin/accounting', icon: BookOpen },

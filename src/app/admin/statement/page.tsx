@@ -318,6 +318,77 @@ function AdminLiveStatementContent() {
     );
   }, [allCustomers, searchQuery]);
 
+  // Chronological Statement of Accounts Ledger for selected loan (Requirement 17)
+  const chronologicalLedger = useMemo(() => {
+    if (!currentLoan) return [];
+
+    const entries: any[] = [];
+    const origDate = currentLoan.origination_date
+      ? new Date(currentLoan.origination_date).toLocaleDateString('en-IN')
+      : '—';
+    const origPrincipal = currentLoan.principal_amount || 0;
+
+    // 1. Origination entry
+    entries.push({
+      date: origDate,
+      description: `Gold Loan Disbursed (${currentLoan.loan_number})`,
+      openingPrincipal: 0,
+      interestAccrued: 0,
+      amountReceived: 0,
+      interestPaid: 0,
+      principalPaid: 0,
+      closingPrincipal: origPrincipal,
+      receiptNumber: 'Pawn Ticket',
+      isCurrent: false,
+    });
+
+    // 2. Sort payments chronologically (oldest first)
+    const sortedPaymentsAsc = [...relevantPayments].sort(
+      (a, b) => new Date(a.payment_date).getTime() - new Date(b.payment_date).getTime()
+    );
+
+    let runningPrincipal = origPrincipal;
+
+    sortedPaymentsAsc.forEach((p) => {
+      const openPrinc = runningPrincipal;
+      const intPaid = p.interest_portion || 0;
+      const princPaid = p.principal_portion || 0;
+      const closePrinc = Math.max(0, openPrinc - princPaid);
+      runningPrincipal = closePrinc;
+
+      entries.push({
+        date: p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-IN') : '—',
+        description: `Repayment via ${p.mode || 'Cash'}`,
+        openingPrincipal: openPrinc,
+        interestAccrued: intPaid,
+        amountReceived: p.amount_paid || (intPaid + princPaid),
+        interestPaid: intPaid,
+        principalPaid: princPaid,
+        closingPrincipal: closePrinc,
+        receiptNumber: p.receipt_number || p.id?.substring(0, 8),
+        isCurrent: false,
+      });
+    });
+
+    // 3. Current Live Position (if loan not settled)
+    if (currentLoan.status !== 'Settled' && currentLoan.status !== 'Closed') {
+      entries.push({
+        date: new Date().toLocaleDateString('en-IN'),
+        description: 'Current Position (Live Balance & Accrued Interest)',
+        openingPrincipal: runningPrincipal,
+        interestAccrued: currentLoan.outstanding_interest || 0,
+        amountReceived: 0,
+        interestPaid: 0,
+        principalPaid: 0,
+        closingPrincipal: runningPrincipal,
+        receiptNumber: 'Live Snapshot',
+        isCurrent: true,
+      });
+    }
+
+    return entries;
+  }, [currentLoan, relevantPayments]);
+
   // PDF Action Handlers
   const handleStatementPdf = () => {
     if (currentLoan) {
@@ -880,6 +951,81 @@ function AdminLiveStatementContent() {
           </div>
         )}
       </div>
+
+      {/* ── CHRONOLOGICAL STATEMENT OF ACCOUNTS / FINANCIAL LEDGER (Requirement 17) ── */}
+      {currentLoan && (
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
+          <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 border-b border-gray-100 pb-3">
+            <div>
+              <div className="flex items-center gap-2">
+                <FileText className="w-5 h-5 text-blue-600" />
+                <h3 className="text-base font-bold text-gray-900 font-outfit">
+                  Statement of Accounts &bull; {currentLoan.loan_number}
+                </h3>
+              </div>
+              <p className="text-xs text-gray-500 mt-0.5">
+                Authoritative chronological ledger trail: Opening Principal &rarr; Interest Accrued &rarr; Payment Received &rarr; Interest Paid &rarr; Principal Paid &rarr; Closing Principal.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleStatementPdf}
+                className="px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition inline-flex items-center gap-1 border border-blue-200 cursor-pointer"
+              >
+                <Printer className="w-3.5 h-3.5 text-blue-600" /> Statement PDF
+              </button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-gray-200 bg-gray-50/70 text-gray-500 text-[10px] font-bold uppercase tracking-wider">
+                  <th className="py-2.5 px-3">Date</th>
+                  <th className="py-2.5 px-3">Transaction / Description</th>
+                  <th className="py-2.5 px-3 text-right">Opening Principal</th>
+                  <th className="py-2.5 px-3 text-right">Interest Accrued</th>
+                  <th className="py-2.5 px-3 text-right">Amount Received</th>
+                  <th className="py-2.5 px-3 text-right">Interest Paid</th>
+                  <th className="py-2.5 px-3 text-right">Principal Paid</th>
+                  <th className="py-2.5 px-3 text-right">Closing Principal</th>
+                  <th className="py-2.5 px-3 text-right">Receipt / Ref</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-100 font-mono">
+                {chronologicalLedger.map((row, idx) => (
+                  <tr key={idx} className={`hover:bg-blue-50/30 transition ${row.isCurrent ? 'bg-amber-50/40 font-semibold' : ''}`}>
+                    <td className="py-3 px-3 text-gray-600 font-sans">{row.date}</td>
+                    <td className="py-3 px-3 font-medium text-gray-900 font-sans">{row.description}</td>
+                    <td className="py-3 px-3 text-right text-gray-800">
+                      ₹{row.openingPrincipal.toLocaleString('en-IN')}
+                    </td>
+                    <td className="py-3 px-3 text-right text-amber-700">
+                      {row.interestAccrued > 0 ? `₹${row.interestAccrued.toLocaleString('en-IN')}` : '—'}
+                    </td>
+                    <td className="py-3 px-3 text-right font-bold text-gray-900">
+                      {row.amountReceived > 0 ? `₹${row.amountReceived.toLocaleString('en-IN')}` : '—'}
+                    </td>
+                    <td className="py-3 px-3 text-right text-amber-700">
+                      {row.interestPaid > 0 ? `₹${row.interestPaid.toLocaleString('en-IN')}` : '—'}
+                    </td>
+                    <td className="py-3 px-3 text-right text-emerald-700 font-bold">
+                      {row.principalPaid > 0 ? `₹${row.principalPaid.toLocaleString('en-IN')}` : '—'}
+                    </td>
+                    <td className="py-3 px-3 text-right font-extrabold text-blue-700">
+                      ₹{row.closingPrincipal.toLocaleString('en-IN')}
+                    </td>
+                    <td className="py-3 px-3 text-right text-gray-500 font-mono text-[11px]">
+                      {row.receiptNumber || '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* ── LIFETIME REPAYMENT HISTORY ── */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 space-y-4">
