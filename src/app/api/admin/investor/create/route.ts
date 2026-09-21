@@ -3,7 +3,7 @@
 // Creates Firebase Auth user credentials, sets custom claims, creates Profile and Investment Account.
 
 import { NextResponse } from 'next/server';
-import { adminAuth, adminDb } from '@/lib/firebase-admin';
+import { adminAuth, adminDb, verifyAuthToken } from '@/lib/firebase-admin';
 import { generateInvestorId, logInvestmentAudit } from '@/lib/db/investments';
 import type { UserRole, Profile, InvestmentAccount } from '@/types/database';
 
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Administrator authentication is required.' }, { status: 401 });
     }
 
-    const caller = await adminAuth.verifyIdToken(idToken);
+    const caller = await verifyAuthToken(idToken);
     if (caller.role !== 'Admin' && caller.role !== 'Owner') {
       return NextResponse.json(
         { error: 'Only an Administrator or Owner can create investor accounts.' },

@@ -1,6 +1,6 @@
 import { NextRequest } from 'next/server';
 import PDFDocument from 'pdfkit/js/pdfkit.standalone';
-import { adminAuth, adminDb, adminStorage } from '@/lib/firebase-admin';
+import { adminAuth, adminDb, adminStorage, verifyAuthToken } from '@/lib/firebase-admin';
 import path from 'path';
 import fs from 'fs';
 import { getNextBillSlogan } from '@/lib/db/slogans';
@@ -73,20 +73,8 @@ async function authenticatePdfRequest(
   }
 
   try {
-    const decoded = await adminAuth.verifyIdToken(token);
-    const uid = decoded.uid;
-    let role = (decoded.role as UserRole) || null;
-
-    if (!role) {
-      const profileSnap = await adminDb.collection('profiles').doc(uid).get();
-      if (profileSnap.exists) {
-        role = (profileSnap.data()?.role as UserRole) || 'Customer';
-      } else {
-        role = 'Customer';
-      }
-    }
-
-    return { uid, role };
+    const verified = await verifyAuthToken(token);
+    return { uid: verified.uid, role: (verified.role as UserRole) || 'Customer' };
   } catch (err: any) {
     throw new Error(`UNAUTHORIZED: Invalid or expired authentication token (${err.message || 'Verification failed'}).`);
   }

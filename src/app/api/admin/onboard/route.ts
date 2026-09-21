@@ -5,7 +5,7 @@
 
 import { NextResponse } from 'next/server';
 import { createProfile, checkDuplicateCustomer } from '@/lib/db/profiles';
-import { adminAuth } from '@/lib/firebase-admin';
+import { adminAuth, verifyAuthToken } from '@/lib/firebase-admin';
 import type { Gender, MaritalStatus, KycStatus, UserRole } from '@/types/database';
 
 export async function POST(request: Request) {
@@ -16,7 +16,7 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Administrator authentication is required.' }, { status: 401 });
     }
 
-    const caller = await adminAuth.verifyIdToken(idToken);
+    const caller = await verifyAuthToken(idToken);
     if (caller.role !== 'Admin' && caller.role !== 'Owner') {
       return NextResponse.json({ error: 'Only an Administrator or Owner can create customer accounts.' }, { status: 403 });
     }
