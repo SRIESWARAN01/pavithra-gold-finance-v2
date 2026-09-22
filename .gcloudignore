@@ -1,0 +1,12 @@
+.gcloudignore
+.git
+.gitignore
+node_modules/
+dist-electron/
+electron/
+tests/
+coverage/
+*.md
+*.skill
+.env*
+!public/

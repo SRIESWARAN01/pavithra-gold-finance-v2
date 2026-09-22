@@ -12,6 +12,16 @@
     }
   },
   "hosting": {
-    "source": "."
+    "source": ".",
+    "ignore": [
+      "firebase.json",
+      "**/.*",
+      "**/node_modules/**",
+      "dist-electron/**",
+      "electron/**",
+      "tests/**",
+      "*.md",
+      "*.skill"
+    ]
   }
 }
