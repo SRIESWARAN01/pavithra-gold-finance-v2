@@ -86,20 +86,11 @@ function RenewalWizardContent() {
   const [previewUrl, setPreviewUrl] = useState('');
   const [previewTitle, setPreviewTitle] = useState('');
 
-  // Initial load
-  useEffect(() => {
-    getCurrentProfile().then(setCurrentUser).catch(() => {});
-    if (queryLoanId) {
-      handleSearchById(queryLoanId);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryLoanId]);
-
   const handleSearchById = async (targetId: string) => {
     setSearchLoading(true);
     setSearchError(null);
     try {
-      let loanDoc = await getDoc(doc(db, 'loans', targetId));
+      const loanDoc = await getDoc(doc(db, 'loans', targetId));
       let loanData: any = null;
 
       if (loanDoc.exists()) {
@@ -164,6 +155,15 @@ function RenewalWizardContent() {
       setSearchLoading(false);
     }
   };
+
+  // Initial load
+  useEffect(() => {
+    getCurrentProfile().then(setCurrentUser).catch(() => {});
+    if (queryLoanId) {
+      handleSearchById(queryLoanId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryLoanId]);
 
   const handleManualSearch = (e: React.FormEvent) => {
     e.preventDefault();

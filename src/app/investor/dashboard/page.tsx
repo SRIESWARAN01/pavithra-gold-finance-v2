@@ -342,7 +342,7 @@ export default function InvestorDashboardPage() {
               {lots.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="px-6 py-12 text-center text-slate-500">
-                    No active investment lots. Click "+ Add Investment" above to start.
+                    No active investment lots. Click &quot;+ Add Investment&quot; above to start.
                   </td>
                 </tr>
               ) : (

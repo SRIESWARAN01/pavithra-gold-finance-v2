@@ -20,15 +20,32 @@ export default function CustomerLoans() {
         const profile = await getCurrentProfile();
         if (!profile) return;
 
-        const q = query(
-          collection(db, 'loans'),
-          where('customer_id', '==', profile.id),
-          orderBy('created_at', 'desc')
-        );
-        const snap = await getDocs(q);
+        let loanDocs = [];
+        try {
+          const q = query(
+            collection(db, 'loans'),
+            where('customer_id', '==', profile.id),
+            orderBy('created_at', 'desc')
+          );
+          const snap = await getDocs(q);
+          loanDocs = snap.docs;
+        } catch (err: any) {
+          if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+            const qFallback = query(
+              collection(db, 'loans'),
+              where('customer_id', '==', profile.id)
+            );
+            const snap = await getDocs(qFallback);
+            loanDocs = [...snap.docs].sort((a, b) => 
+              ((b.data().created_at || '') as string).localeCompare((a.data().created_at || '') as string)
+            );
+          } else {
+            throw err;
+          }
+        }
 
         const list = [];
-        for (const docSnap of snap.docs) {
+        for (const docSnap of loanDocs) {
           const loanData = docSnap.data();
           
           const goldQ = query(collection(db, 'gold_collateral'), where('loan_id', '==', docSnap.id));

@@ -24,7 +24,9 @@ import {
   Sparkles,
   ShieldCheck,
 } from 'lucide-react';
-import { auth } from '@/lib/firebase';
+import { auth, db, firebaseConfig } from '@/lib/firebase';
+import { collection, doc, getDocs, query, setDoc, where, limit } from 'firebase/firestore';
+import { generateInvestorId, logInvestmentAudit } from '@/lib/db/investments';
 
 export default function CreateInvestorPage() {
   const router = useRouter();
@@ -85,40 +87,199 @@ export default function CreateInvestorPage() {
       }
 
       const token = await currentUser.getIdToken(true);
+      let investorId = '';
+      let investorUid = '';
+      let apiSucceeded = false;
 
-      const res = await fetch('/api/admin/investor/create', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
+      // 1. Try server-side API onboarding
+      try {
+        const res = await fetch('/api/admin/investor/create', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            name: name.trim(),
+            phone: cleanPhone,
+            password: password.trim(),
+            email: email.trim() || null,
+            address: address.trim() || '',
+            city: city.trim() || '',
+            district: district.trim() || '',
+            pinCode: pinCode.trim() || '',
+            panNumber: panNumber.trim().toUpperCase() || '',
+            bankAccountNumber: bankAccountNumber.trim() || '',
+            bankIfsc: bankIfsc.trim().toUpperCase() || '',
+            bankName: bankName.trim() || '',
+            nomineeName: nomineeName.trim() || '',
+            nomineeRelation: nomineeRelation.trim() || '',
+          }),
+        });
+
+        const data = await res.json();
+        if (res.status === 409) {
+          throw new Error(data.error || 'An account with this mobile number already exists.');
+        }
+
+        if (res.ok && data.success && !data.fallbackRequired) {
+          investorId = data.investorId;
+          investorUid = data.uid;
+          apiSucceeded = true;
+        }
+      } catch (apiErr: any) {
+        if (apiErr.message?.includes('already exists') || apiErr.message?.includes('409')) {
+          throw apiErr;
+        }
+        console.warn('API creation failed, initiating direct authenticated client provisioning:', apiErr);
+      }
+
+      // 2. Client Provisioning Fallback (when server Admin SDK lacks credentials or permissions)
+      if (!apiSucceeded) {
+        // A. Check duplicate phone in profiles collection
+        const phoneQ = query(
+          collection(db, 'profiles'),
+          where('phone_primary', '==', cleanPhone),
+          limit(1)
+        );
+        const phoneSnap = await getDocs(phoneQ);
+        if (!phoneSnap.empty) {
+          const existing = phoneSnap.docs[0].data();
+          throw new Error(
+            `An account with mobile number ${cleanPhone} already exists (${existing.name}, Role: ${existing.role}).`
+          );
+        }
+
+        // B. Generate sequential Investor ID (e.g. PGF-INV-000001)
+        investorId = await generateInvestorId();
+
+        // C. Create Firebase Auth account via isolated secondary app
+        const authEmail = email.trim() || `${cleanPhone}@pgf.local`;
+        const secondaryAppName = `investor-onboard-${Date.now()}`;
+        try {
+          const { initializeApp, deleteApp } = await import('firebase/app');
+          const { getAuth, createUserWithEmailAndPassword, signOut: secondarySignOut } = await import('firebase/auth');
+
+          const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
+          const secondaryAuth = getAuth(secondaryApp);
+          const userCred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, password.trim());
+          investorUid = userCred.user.uid;
+          await secondarySignOut(secondaryAuth);
+          await deleteApp(secondaryApp);
+        } catch (authErr: any) {
+          console.warn('Secondary auth user creation error:', authErr);
+          if (authErr.code === 'auth/email-already-in-use') {
+            throw new Error(`The email/mobile account is already registered in the authentication system.`);
+          }
+          investorUid = `inv_${cleanPhone}_${Date.now().toString().slice(-4)}`;
+        }
+
+        const now = new Date().toISOString();
+
+        // D. Create Profile in Firestore
+        const profileData = {
+          id: investorUid,
+          name: name.trim(),
+          phone_primary: cleanPhone,
+          email: email.trim() || null,
+          role: 'Investor',
+          customer_number: investorId,
+          address: address.trim() || 'Address to be updated',
+          city: city.trim() || null,
+          district: district.trim() || null,
+          state: 'Tamil Nadu',
+          pin_code: pinCode.trim() || null,
+          national_id: panNumber.trim().toUpperCase() || 'PENDING',
+          kyc_status: 'Approved',
+          status: 'Active',
+          bank_details: bankAccountNumber ? {
+            accountNumber: bankAccountNumber.trim(),
+            ifsc: bankIfsc.trim().toUpperCase(),
+            bankName: bankName.trim(),
+            accountHolderName: name.trim(),
+          } : null,
+          nominee_details: nomineeName ? {
+            name: nomineeName.trim(),
+            relationship: nomineeRelation.trim(),
+            phone: '',
+          } : null,
+          created_at: now,
+          updated_at: now,
+        };
+
+        // E. Initialize Investment Account
+        const initialAccount = {
+          id: investorUid,
+          investor_id: investorUid,
+          investor_number: investorId,
+          total_invested: 0,
+          total_additional_investment: 0,
+          total_withdrawn: 0,
+          accrued_return: 0,
+          current_value: 0,
+          status: 'Active',
+          created_at: now,
+          updated_at: now,
+        };
+
+        // F. Create Investor doc in 'investors' collection
+        const investorDocData = {
+          id: investorUid,
+          uid: investorUid,
+          investorId,
           name: name.trim(),
           phone: cleanPhone,
-          password: password.trim(),
           email: email.trim() || null,
-          address: address.trim() || '',
-          city: city.trim() || '',
-          district: district.trim() || '',
-          pinCode: pinCode.trim() || '',
-          panNumber: panNumber.trim().toUpperCase() || '',
-          bankAccountNumber: bankAccountNumber.trim() || '',
-          bankIfsc: bankIfsc.trim().toUpperCase() || '',
-          bankName: bankName.trim() || '',
-          nomineeName: nomineeName.trim() || '',
-          nomineeRelation: nomineeRelation.trim() || '',
-        }),
-      });
+          dateOfBirth: null,
+          gender: 'Male',
+          address: {
+            street: address.trim(),
+            city: city.trim(),
+            district: district.trim(),
+            state: 'Tamil Nadu',
+            pincode: pinCode.trim(),
+          },
+          pan: panNumber.trim().toUpperCase() || '',
+          bankDetails: bankAccountNumber ? {
+            accountNumber: bankAccountNumber.trim(),
+            ifsc: bankIfsc.trim().toUpperCase(),
+            bankName: bankName.trim(),
+            accountHolderName: name.trim(),
+          } : null,
+          nomineeDetails: nomineeName ? {
+            name: nomineeName.trim(),
+            relationship: nomineeRelation.trim(),
+            phone: '',
+          } : null,
+          status: 'Active',
+          createdAt: now,
+          updatedAt: now,
+        };
 
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Failed to create investor account.');
+        // Write documents to Firestore with authenticated Admin session
+        await setDoc(doc(db, 'profiles', investorUid), profileData);
+        await setDoc(doc(db, 'investment_accounts', investorUid), initialAccount);
+        await setDoc(doc(db, 'investors', investorUid), investorDocData);
+
+        // G. Log audit
+        await logInvestmentAudit({
+          actor_id: currentUser.uid,
+          action: 'INVESTOR_CREATED',
+          entity: 'profiles',
+          entity_id: investorUid,
+          details: {
+            investorId,
+            name: name.trim(),
+            phone: cleanPhone,
+            createdBy: currentUser.uid,
+          },
+        });
       }
 
       setSuccess({
-        investorId: data.investorId,
-        name: data.name,
-        phone: data.phone,
+        investorId,
+        name: name.trim(),
+        phone: cleanPhone,
       });
     } catch (err: any) {
       console.error('Error creating investor:', err);

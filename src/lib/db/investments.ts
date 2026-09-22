@@ -250,33 +250,72 @@ export function formatDurationText(days: number): string {
 // ============================================================================
 
 export async function getInvestorLots(investorId: string): Promise<InvestmentLot[]> {
-  const q = query(
-    collection(db, COLL_LOTS),
-    where('investor_id', '==', investorId),
-    orderBy('investment_date', 'asc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentLot, 'id'>) }));
+  try {
+    const q = query(
+      collection(db, COLL_LOTS),
+      where('investor_id', '==', investorId),
+      orderBy('investment_date', 'asc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentLot, 'id'>) }));
+  } catch (err: any) {
+    if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+      const qFallback = query(
+        collection(db, COLL_LOTS),
+        where('investor_id', '==', investorId)
+      );
+      const snap = await getDocs(qFallback);
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentLot, 'id'>) }));
+      return items.sort((a, b) => (a.investment_date || '').localeCompare(b.investment_date || ''));
+    }
+    throw err;
+  }
 }
 
 export async function getInvestorTransactions(investorId: string): Promise<InvestmentTransaction[]> {
-  const q = query(
-    collection(db, COLL_TRANSACTIONS),
-    where('investor_id', '==', investorId),
-    orderBy('transaction_date', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentTransaction, 'id'>) }));
+  try {
+    const q = query(
+      collection(db, COLL_TRANSACTIONS),
+      where('investor_id', '==', investorId),
+      orderBy('transaction_date', 'desc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentTransaction, 'id'>) }));
+  } catch (err: any) {
+    if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+      const qFallback = query(
+        collection(db, COLL_TRANSACTIONS),
+        where('investor_id', '==', investorId)
+      );
+      const snap = await getDocs(qFallback);
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<InvestmentTransaction, 'id'>) }));
+      return items.sort((a, b) => (b.transaction_date || '').localeCompare(a.transaction_date || ''));
+    }
+    throw err;
+  }
 }
 
 export async function getInvestorWithdrawalRequests(investorId: string): Promise<WithdrawalRequest[]> {
-  const q = query(
-    collection(db, COLL_WITHDRAWALS),
-    where('investor_id', '==', investorId),
-    orderBy('created_at', 'desc')
-  );
-  const snap = await getDocs(q);
-  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<WithdrawalRequest, 'id'>) }));
+  try {
+    const q = query(
+      collection(db, COLL_WITHDRAWALS),
+      where('investor_id', '==', investorId),
+      orderBy('created_at', 'desc')
+    );
+    const snap = await getDocs(q);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<WithdrawalRequest, 'id'>) }));
+  } catch (err: any) {
+    if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+      const qFallback = query(
+        collection(db, COLL_WITHDRAWALS),
+        where('investor_id', '==', investorId)
+      );
+      const snap = await getDocs(qFallback);
+      const items = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<WithdrawalRequest, 'id'>) }));
+      return items.sort((a, b) => (b.created_at || '').localeCompare(a.created_at || ''));
+    }
+    throw err;
+  }
 }
 
 export async function getInvestorPortfolio(
@@ -864,17 +903,36 @@ export async function completeWithdrawalPayment(data: {
     const txnId = await generateInvestmentTxnId();
 
     // Deduct from lots (FIFO basis)
-    const lotsSnap = await getDocs(
-      query(
-        collection(db, COLL_LOTS),
-        where('investor_id', '==', wdr.investor_id),
-        where('status', 'in', ['Active', 'Partially_Withdrawn']),
-        orderBy('investment_date', 'asc')
-      )
-    );
+    let lotsDocs: { id: string; ref: any; data: () => InvestmentLot }[] = [];
+    try {
+      const lotsSnap = await getDocs(
+        query(
+          collection(db, COLL_LOTS),
+          where('investor_id', '==', wdr.investor_id),
+          where('status', 'in', ['Active', 'Partially_Withdrawn']),
+          orderBy('investment_date', 'asc')
+        )
+      );
+      lotsDocs = lotsSnap.docs as any;
+    } catch (err: any) {
+      if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+        const lotsSnap = await getDocs(
+          query(
+            collection(db, COLL_LOTS),
+            where('investor_id', '==', wdr.investor_id),
+            where('status', 'in', ['Active', 'Partially_Withdrawn'])
+          )
+        );
+        lotsDocs = [...lotsSnap.docs].sort((a, b) => 
+          ((a.data() as InvestmentLot).investment_date || '').localeCompare((b.data() as InvestmentLot).investment_date || '')
+        ) as any;
+      } else {
+        throw err;
+      }
+    }
 
     let remainingToDeduct = data.paid_amount;
-    for (const lotDoc of lotsSnap.docs) {
+    for (const lotDoc of lotsDocs) {
       if (remainingToDeduct <= 0) break;
       const lot = lotDoc.data() as InvestmentLot;
       const available = (lot.principal_amount || 0) - (lot.withdrawn_amount || 0);

@@ -96,91 +96,6 @@ function BillingContent() {
     penaltyCollection: 0,
   });
 
-  // Load current user profile
-  useEffect(() => {
-    getCurrentProfile().then(setCurrentUser).catch(() => {});
-  }, []);
-
-  // Handle URL query loanId
-  useEffect(() => {
-    if (queryLoanId) {
-      handleSearchLoan(queryLoanId);
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [queryLoanId]);
-
-  // Load dashboard / archive data
-  const fetchBillingData = async () => {
-    try {
-      const pmtSnap = await getDocs(collection(db, 'payments'));
-      const paymentsData: any[] = [];
-      for (const d of pmtSnap.docs) {
-        const p: any = { id: d.id, ...d.data() };
-        if (p.loan_id) {
-          const loanSnap = await getDoc(doc(db, 'loans', p.loan_id));
-          if (loanSnap.exists()) p.loan = loanSnap.data();
-        }
-        if (p.customer_id) {
-          const custSnap = await getDoc(doc(db, 'profiles', p.customer_id));
-          if (custSnap.exists()) p.customer = { name: custSnap.data().name };
-        }
-        paymentsData.push(p);
-      }
-
-      paymentsData.sort((a: any, b: any) => (b.payment_date || '').localeCompare(a.payment_date || ''));
-
-      const mappedBills = paymentsData.map((p: any) => ({
-        id: p.id,
-        paymentId: p.id,
-        loanDocId: p.loan_id,
-        loanNumber: p.loan?.loan_number || 'N/A',
-        customerDocId: p.customer_id,
-        billNo: p.receipt_number || `PGF-REC-${p.id.substring(0, 6).toUpperCase()}`,
-        date: p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-IN') : 'N/A',
-        customer: p.customer?.name || 'Customer',
-        loanId: p.loan?.loan_number || 'N/A',
-        amount: p.amount_paid,
-        type: (p.payment_type || 'Repayment') + ' Payment',
-        mode: p.mode || 'Cash',
-        status: p.status || 'Paid',
-      }));
-
-      setBills(mappedBills);
-
-      const todayStr = new Date().toISOString().split('T')[0];
-      let todayCollection = 0, totalRevenue = 0, interestCollection = 0, principalCollection = 0, penaltyCollection = 0;
-
-      paymentsData.forEach((p: any) => {
-        totalRevenue += p.amount_paid || 0;
-        interestCollection += p.interest_portion || 0;
-        principalCollection += p.principal_portion || 0;
-        penaltyCollection += p.penalty_amount || 0;
-
-        if (p.payment_date && p.payment_date.split('T')[0] === todayStr) {
-          todayCollection += p.amount_paid || 0;
-        }
-      });
-
-      setTotalStats({
-        todayCollection,
-        totalBills: paymentsData.length,
-        totalRevenue,
-        cancelledBills: paymentsData.filter((p: any) => p.status === 'REVERSED').length,
-        interestCollection,
-        principalCollection,
-        penaltyCollection,
-      });
-    } catch (err) {
-      console.error('Failed to load billing history:', err);
-    }
-  };
-
-  useEffect(() => {
-    if (activeTab === 'dashboard' || activeTab === 'history') {
-      fetchBillingData();
-    }
-  }, [activeTab]);
-
   // Primary Loan Search Handler
   const handleSearchLoan = async (searchTerm?: string) => {
     const term = (searchTerm || searchLoanNumber).trim();
@@ -287,6 +202,93 @@ function BillingContent() {
       setSearchLoading(false);
     }
   };
+
+  // Load current user profile
+  useEffect(() => {
+    getCurrentProfile().then(setCurrentUser).catch(() => {});
+  }, []);
+
+  // Handle URL query loanId
+  useEffect(() => {
+    if (queryLoanId) {
+      handleSearchLoan(queryLoanId);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queryLoanId]);
+
+  // Load dashboard / archive data
+  const fetchBillingData = async () => {
+    try {
+      const pmtSnap = await getDocs(collection(db, 'payments'));
+      const paymentsData: any[] = [];
+      for (const d of pmtSnap.docs) {
+        const p: any = { id: d.id, ...d.data() };
+        if (p.loan_id) {
+          const loanSnap = await getDoc(doc(db, 'loans', p.loan_id));
+          if (loanSnap.exists()) p.loan = loanSnap.data();
+        }
+        if (p.customer_id) {
+          const custSnap = await getDoc(doc(db, 'profiles', p.customer_id));
+          if (custSnap.exists()) p.customer = { name: custSnap.data().name };
+        }
+        paymentsData.push(p);
+      }
+
+      paymentsData.sort((a: any, b: any) => (b.payment_date || '').localeCompare(a.payment_date || ''));
+
+      const mappedBills = paymentsData.map((p: any) => ({
+        id: p.id,
+        paymentId: p.id,
+        loanDocId: p.loan_id,
+        loanNumber: p.loan?.loan_number || 'N/A',
+        customerDocId: p.customer_id,
+        billNo: p.receipt_number || `PGF-REC-${p.id.substring(0, 6).toUpperCase()}`,
+        date: p.payment_date ? new Date(p.payment_date).toLocaleDateString('en-IN') : 'N/A',
+        customer: p.customer?.name || 'Customer',
+        loanId: p.loan?.loan_number || 'N/A',
+        amount: p.amount_paid,
+        type: (p.payment_type || 'Repayment') + ' Payment',
+        mode: p.mode || 'Cash',
+        status: p.status || 'Paid',
+      }));
+
+      setBills(mappedBills);
+
+      const todayStr = new Date().toISOString().split('T')[0];
+      let todayCollection = 0, totalRevenue = 0, interestCollection = 0, principalCollection = 0, penaltyCollection = 0;
+
+      paymentsData.forEach((p: any) => {
+        totalRevenue += p.amount_paid || 0;
+        interestCollection += p.interest_portion || 0;
+        principalCollection += p.principal_portion || 0;
+        penaltyCollection += p.penalty_amount || 0;
+
+        if (p.payment_date && p.payment_date.split('T')[0] === todayStr) {
+          todayCollection += p.amount_paid || 0;
+        }
+      });
+
+      setTotalStats({
+        todayCollection,
+        totalBills: paymentsData.length,
+        totalRevenue,
+        cancelledBills: paymentsData.filter((p: any) => p.status === 'REVERSED').length,
+        interestCollection,
+        principalCollection,
+        penaltyCollection,
+      });
+    } catch (err) {
+      console.error('Failed to load billing history:', err);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'dashboard' || activeTab === 'history') {
+      fetchBillingData();
+    }
+  }, [activeTab]);
+
+
 
   // Recalculate interest if payment date changes
   useEffect(() => {
@@ -1018,7 +1020,7 @@ function BillingContent() {
                       <div className="p-2.5 bg-blue-100/70 border border-blue-200 rounded-lg text-[11px] text-blue-950 flex items-center gap-2">
                         <Sparkles size={14} className="text-blue-700 shrink-0" />
                         <span>
-                          <strong>Principal Reduction:</strong> ₹{principalReduction.toLocaleString('en-IN')} will be deducted immediately from Principal Balance (₹{currentPrincipal.toLocaleString('en-IN')} → ₹{newPrincipalBalance.toLocaleString('en-IN')}). Next day's interest will accrue strictly on <strong>₹{newPrincipalBalance.toLocaleString('en-IN')}</strong>.
+                          <strong>Principal Reduction:</strong> ₹{principalReduction.toLocaleString('en-IN')} will be deducted immediately from Principal Balance (₹{currentPrincipal.toLocaleString('en-IN')} → ₹{newPrincipalBalance.toLocaleString('en-IN')}). Next day&apos;s interest will accrue strictly on <strong>₹{newPrincipalBalance.toLocaleString('en-IN')}</strong>.
                         </span>
                       </div>
                     )}

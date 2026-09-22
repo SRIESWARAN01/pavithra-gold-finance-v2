@@ -251,8 +251,27 @@ export default function CustomerOnboarding() {
             throw apiErr;
           }
           // Direct client fallback creation
+          let authUid = `cust_${cleanPhone}`;
+          try {
+            const { initializeApp, deleteApp } = await import('firebase/app');
+            const { getAuth, createUserWithEmailAndPassword, signOut: secondarySignOut } = await import('firebase/auth');
+            const { firebaseConfig } = await import('@/lib/firebase');
+
+            const secondaryAppName = `cust-onboard-${Date.now()}`;
+            const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
+            const secondaryAuth = getAuth(secondaryApp);
+            const authEmail = email.trim() || `${cleanPhone}@pgf.local`;
+            const userCred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, finalPassword);
+            authUid = userCred.user.uid;
+            await secondarySignOut(secondaryAuth);
+            await deleteApp(secondaryApp);
+          } catch (authErr: any) {
+            console.warn('Customer fallback auth creation note:', authErr);
+            authUid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+          }
+
           const directProfile = await createProfile({
-            id: `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+            id: authUid,
             name: name.trim(),
             phone_primary: cleanPhone,
             phone_alt: phoneAlt.trim() || undefined,

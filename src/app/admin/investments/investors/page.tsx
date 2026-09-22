@@ -49,9 +49,24 @@ export default function InvestorDirectoryPage() {
     setError(null);
     try {
       // 1. Fetch all profiles with role == 'Investor'
-      const profSnap = await getDocs(
-        query(collection(db, 'profiles'), where('role', '==', 'Investor'), orderBy('created_at', 'desc'))
-      );
+      let profDocs = [];
+      try {
+        const profSnap = await getDocs(
+          query(collection(db, 'profiles'), where('role', '==', 'Investor'), orderBy('created_at', 'desc'))
+        );
+        profDocs = profSnap.docs;
+      } catch (err: any) {
+        if (err?.message?.includes('requires an index') || err?.code === 'failed-precondition') {
+          const fallbackSnap = await getDocs(
+            query(collection(db, 'profiles'), where('role', '==', 'Investor'))
+          );
+          profDocs = [...fallbackSnap.docs].sort((a, b) => 
+            ((b.data().created_at || '') as string).localeCompare((a.data().created_at || '') as string)
+          );
+        } else {
+          throw err;
+        }
+      }
 
       // 2. Fetch all investment accounts
       const acctSnap = await getDocs(collection(db, 'investment_accounts'));
@@ -60,7 +75,7 @@ export default function InvestorDirectoryPage() {
         acctMap[d.id] = d.data() as InvestmentAccount;
       });
 
-      const items: InvestorListItem[] = profSnap.docs.map((d) => {
+      const items: InvestorListItem[] = profDocs.map((d) => {
         const p = d.data() as Profile;
         const acct = acctMap[d.id];
         return {

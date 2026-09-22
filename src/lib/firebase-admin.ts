@@ -56,12 +56,14 @@ export default adminApp;
  * Checks authoritative profile in Firestore if role is not in custom claims.
  */
 export async function verifyAuthToken(idToken: string): Promise<{ uid: string; role: string; [key: string]: any }> {
-  // 1. Direct dev mock tokens
-  if (idToken === 'test-dev-admin-token' || idToken === 'test-dev-token') {
-    return { uid: 'dev_admin', role: 'Admin' };
-  }
-  if (idToken === 'test-dev-customer-token') {
-    return { uid: 'cust_sample_123', role: 'Customer' };
+  // 1. Direct dev mock tokens (strictly disabled in production)
+  if (process.env.NODE_ENV !== 'production') {
+    if (idToken === 'test-dev-admin-token' || idToken === 'test-dev-token') {
+      return { uid: 'dev_admin', role: 'Admin' };
+    }
+    if (idToken === 'test-dev-customer-token') {
+      return { uid: 'cust_sample_123', role: 'Customer' };
+    }
   }
 
   try {

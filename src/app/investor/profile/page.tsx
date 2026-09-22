@@ -21,7 +21,7 @@ import {
 import { useAuth } from '@/context/AuthContext';
 import { getInvestorPortfolio, logInvestmentAudit } from '@/lib/db/investments';
 import { InvestorPortfolioSummary, Investor } from '@/types/database';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, setDoc } from 'firebase/firestore';
 import { db, auth } from '@/lib/firebase';
 import { updatePassword } from 'firebase/auth';
 
@@ -115,6 +115,7 @@ export default function InvestorProfilePage() {
       setSaveSuccess(false);
 
       const investorRef = doc(db, 'investors', user.uid);
+      const profileRef = doc(db, 'profiles', user.uid);
       const updatedFields = {
         name: name.trim(),
         email: email.trim(),
@@ -142,7 +143,23 @@ export default function InvestorProfilePage() {
         updatedAt: new Date().toISOString()
       };
 
-      await updateDoc(investorRef, updatedFields);
+      // Synchronize both profiles and investors collections
+      await setDoc(profileRef, {
+        name: name.trim(),
+        email: email.trim(),
+        address: address.trim(),
+        city: city.trim(),
+        district: district.trim(),
+        state: state.trim(),
+        pin_code: pincode.trim(),
+        pan_number: pan.trim().toUpperCase(),
+        national_id: pan.trim().toUpperCase(),
+        bank_details: updatedFields.bankDetails,
+        nominee_details: updatedFields.nomineeDetails,
+        updated_at: new Date().toISOString()
+      }, { merge: true });
+
+      await setDoc(investorRef, updatedFields, { merge: true });
 
       // Log audit
       await logInvestmentAudit({

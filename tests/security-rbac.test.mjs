@@ -3,6 +3,8 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // ---------------------------------------------------------------------------
 // Mirror of role hierarchy used in Firestore rules and auth.ts
@@ -194,3 +196,31 @@ test('RBAC: Only Admin/Owner can write settings', () => {
   assert.strictEqual(canWriteSettings('Customer'), false);
   assert.strictEqual(canWriteSettings('Investor'), false);
 });
+
+test('RBAC Static Audit: firestore.rules restricts settings write to isAdmin', () => {
+  const rulesPath = path.resolve(process.cwd(), 'firestore.rules');
+  assert.ok(fs.existsSync(rulesPath), 'firestore.rules must exist');
+  const content = fs.readFileSync(rulesPath, 'utf8');
+
+  // Verify settings write requires isAdmin
+  assert.match(
+    content,
+    /match \/settings\/\{settingKey\} \{\s+allow read: if isAuthenticated\(\);\s+allow write: if isAdmin\(\);/,
+    'firestore.rules must require isAdmin() for /settings'
+  );
+
+  // Verify investment_settings write requires isAdmin
+  assert.match(
+    content,
+    /match \/investment_settings\/\{settingId\} \{\s+allow read: if isAuthenticated\(\);\s+allow write: if isAdmin\(\);/,
+    'firestore.rules must require isAdmin() for /investment_settings'
+  );
+
+  // Verify investment_plans write requires isAdmin
+  assert.match(
+    content,
+    /match \/investment_plans\/\{planId\} \{\s+allow read: if isAuthenticated\(\);\s+allow write: if isAdmin\(\);/,
+    'firestore.rules must require isAdmin() for /investment_plans'
+  );
+});
+

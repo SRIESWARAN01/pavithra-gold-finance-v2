@@ -97,12 +97,34 @@ export async function requireAuth(): Promise<{ userId: string; profile: Profile 
 }
 
 /**
- * Require admin/backoffice role — throws if not authenticated or is a Customer.
+ * Require admin/owner role — throws if not authenticated or not an Admin or Owner.
  */
 export async function requireAdmin(): Promise<{ userId: string; profile: Profile }> {
   const authResult = await requireAuth();
-  if (authResult.profile.role === 'Customer') {
+  if (!['Admin', 'Owner'].includes(authResult.profile.role)) {
     throw new Error('Admin access required.');
+  }
+  return authResult;
+}
+
+/**
+ * Require staff/backoffice role — throws if not authenticated or is Customer or Investor.
+ */
+export async function requireStaff(): Promise<{ userId: string; profile: Profile }> {
+  const authResult = await requireAuth();
+  const staffRoles: UserRole[] = [
+    'Admin',
+    'Owner',
+    'Manager',
+    'Employee',
+    'Appraiser',
+    'Cashier',
+    'Accountant',
+    'Collection_Officer',
+    'Customer_Support',
+  ];
+  if (!staffRoles.includes(authResult.profile.role)) {
+    throw new Error('Staff access required.');
   }
   return authResult;
 }

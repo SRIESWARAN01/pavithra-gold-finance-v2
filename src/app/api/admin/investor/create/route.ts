@@ -76,27 +76,32 @@ export async function POST(request: Request) {
         );
       }
     } catch (dbErr: any) {
-      if (dbErr.message?.includes('Could not load the default credentials') || dbErr.message?.includes('default credentials')) {
-        const { db } = await import('@/lib/firebase');
-        const { collection, query, where, getDocs, limit } = await import('firebase/firestore');
-        const q = query(collection(db, 'profiles'), where('phone_primary', '==', cleanedPhone), limit(1));
-        const snap = await getDocs(q);
-        if (!snap.empty) {
-          const existing = snap.docs[0].data();
-          return NextResponse.json(
-            {
-              error: `An account with mobile number ${cleanedPhone} already exists (${existing.name}, Role: ${existing.role}).`,
-            },
-            { status: 409 }
-          );
-        }
-      } else {
-        throw dbErr;
+      if (
+        dbErr.message?.includes('Could not load the default credentials') ||
+        dbErr.message?.includes('default credentials') ||
+        dbErr.code === 'app/invalid-credential'
+      ) {
+        return NextResponse.json({
+          fallbackRequired: true,
+          message: 'Admin SDK credentials not configured on server. Falling back to authenticated client provisioning.',
+        });
       }
+      throw dbErr;
     }
 
-    // 1. Generate unique Investor ID
-    const investorId = await generateInvestorId();
+    // 1. Generate unique Investor ID via Admin SDK or fallback
+    let investorId: string;
+    try {
+      const counterRef = adminDb.collection('counters').doc('investor_id_counter');
+      investorId = await adminDb.runTransaction(async (t) => {
+        const snap = await t.get(counterRef);
+        const nextVal = snap.exists ? (snap.data()?.lastValue || 0) + 1 : 1;
+        t.set(counterRef, { lastValue: nextVal, updated_at: new Date().toISOString() }, { merge: true });
+        return `PGF-INV-${String(nextVal).padStart(6, '0')}`;
+      });
+    } catch {
+      investorId = `PGF-INV-${Date.now().toString().slice(-6)}`;
+    }
 
     // 2. Create Firebase Auth user
     const authEmail = email ? email.trim() : `${cleanedPhone}@pgf.local`;
@@ -113,20 +118,28 @@ export async function POST(request: Request) {
       await adminAuth.setCustomUserClaims(uid, { role: 'Investor' as UserRole });
     } catch (authErr: any) {
       if (
-        process.env.NODE_ENV !== 'production' &&
-        (authErr.message?.includes('Could not load the default credentials') || authErr.message?.includes('default credentials'))
+        authErr.message?.includes('Could not load the default credentials') ||
+        authErr.message?.includes('default credentials') ||
+        authErr.code === 'app/invalid-credential'
       ) {
-        console.warn('[InvestorCreate] ⚠️ Missing default credentials in dev mode. Generating deterministic UID.');
-        uid = `inv_${cleanedPhone}`;
-      } else {
-        throw authErr;
+        return NextResponse.json({
+          fallbackRequired: true,
+          message: 'Admin SDK credentials not configured on server. Falling back to authenticated client provisioning.',
+        });
       }
+      if (authErr.code === 'auth/email-already-in-use' || authErr.code === 'auth/phone-number-already-exists') {
+        return NextResponse.json(
+          { error: `An account with this email or phone number already exists in authentication system.` },
+          { status: 409 }
+        );
+      }
+      throw authErr;
     }
 
     const now = new Date().toISOString();
 
     // 4. Create Profile in Firestore
-    const profileData: Partial<Profile> = {
+    const profileData: Partial<Profile> & Record<string, any> = {
       id: uid,
       name: name.trim(),
       phone_primary: cleanedPhone,
@@ -141,6 +154,17 @@ export async function POST(request: Request) {
       national_id: panNumber.trim() || 'PENDING',
       kyc_status: 'Approved',
       status: 'Active',
+      bank_details: bankAccountNumber ? {
+        accountNumber: bankAccountNumber.trim(),
+        ifsc: bankIfsc.trim().toUpperCase(),
+        bankName: bankName.trim(),
+        accountHolderName: name.trim(),
+      } as any : null,
+      nominee_details: nomineeName ? {
+        name: nomineeName.trim(),
+        relationship: nomineeRelation.trim(),
+        phone: '',
+      } as any : null,
       created_at: now,
       updated_at: now,
     };
@@ -163,18 +187,28 @@ export async function POST(request: Request) {
     try {
       await adminDb.collection('profiles').doc(uid).set(profileData);
       await adminDb.collection('investment_accounts').doc(uid).set(initialAccount);
+      await adminDb.collection('investors').doc(uid).set({
+        id: uid,
+        uid,
+        investorId,
+        name: name.trim(),
+        phone: cleanedPhone,
+        email: email ? email.trim() : null,
+        status: 'Active',
+        createdAt: now,
+        updatedAt: now,
+      });
     } catch (dbErr: any) {
       if (
-        process.env.NODE_ENV !== 'production' &&
-        (dbErr.message?.includes('Could not load the default credentials') || dbErr.message?.includes('default credentials'))
+        dbErr.message?.includes('Could not load the default credentials') ||
+        dbErr.message?.includes('default credentials')
       ) {
-        const { db } = await import('@/lib/firebase');
-        const { doc, setDoc } = await import('firebase/firestore');
-        await setDoc(doc(db, 'profiles', uid), profileData);
-        await setDoc(doc(db, 'investment_accounts', uid), initialAccount);
-      } else {
-        throw dbErr;
+        return NextResponse.json({
+          fallbackRequired: true,
+          message: 'Admin SDK credentials not configured on server. Falling back to authenticated client provisioning.',
+        });
       }
+      throw dbErr;
     }
 
     // 6. Log Audit

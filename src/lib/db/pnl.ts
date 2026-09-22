@@ -85,7 +85,7 @@ export async function getDailyPnL(
   let interestIncome = 0;
   let penaltyIncome = 0;
   let processingFees = 0;
-  let otherIncome = 0;
+  const otherIncome = 0;
 
   payments.forEach((p) => {
     interestIncome += p.interest_portion || 0;

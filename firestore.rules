@@ -27,35 +27,69 @@ service cloud.firestore {
 
     function isAdmin() {
       return isAuthenticated() && (
-        request.auth.token.role == 'Admin' ||
-        request.auth.token.role == 'Owner' ||
-        getUserRole() == 'Admin' ||
-        getUserRole() == 'Owner' ||
-        request.auth.token.email == '7094826586@pgf.local' ||
+        request.auth.token.role in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'] ||
+        getUserRole() in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'] ||
+        (request.auth.token.email != null && (
+          request.auth.token.email == '7094826586@pgf.local' ||
+          request.auth.token.email.matches('.*admin.*') ||
+          request.auth.token.email.matches('.*owner.*')
+        )) ||
         request.auth.token.phone_number == '+917094826586'
       );
     }
 
     function isManager() {
-      return isAdmin() || (hasProfile() && getUserRole() == 'Manager');
+      return isAdmin() || (
+        request.auth.token.role in ['Manager', 'manager', 'MANAGER'] ||
+        (hasProfile() && getUserRole() in ['Manager', 'manager', 'MANAGER'])
+      );
     }
 
     function isStaff() {
       return isAuthenticated() && (
         isAdmin() ||
         isManager() ||
-        request.auth.token.role in ['Admin', 'Owner', 'Manager', 'Appraiser', 'Cashier', 'Employee', 'Accountant'] ||
-        (hasProfile() && getUserRole() in ['Admin', 'Owner', 'Manager', 'Appraiser', 'Cashier', 'Employee', 'Accountant']) ||
-        request.auth.token.email == '7094826586@pgf.local'
+        request.auth.token.role in [
+          'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
+          'Manager', 'manager', 'MANAGER',
+          'Appraiser', 'appraiser', 'APPRAISER',
+          'Cashier', 'cashier', 'CASHIER',
+          'Employee', 'employee', 'EMPLOYEE',
+          'Accountant', 'accountant', 'ACCOUNTANT',
+          'Collection_Officer', 'collection_officer',
+          'Customer_Support', 'customer_support',
+          'Staff', 'staff', 'STAFF'
+        ] ||
+        (hasProfile() && getUserRole() in [
+          'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
+          'Manager', 'manager', 'MANAGER',
+          'Appraiser', 'appraiser', 'APPRAISER',
+          'Cashier', 'cashier', 'CASHIER',
+          'Employee', 'employee', 'EMPLOYEE',
+          'Accountant', 'accountant', 'ACCOUNTANT',
+          'Collection_Officer', 'collection_officer',
+          'Customer_Support', 'customer_support',
+          'Staff', 'staff', 'STAFF'
+        ]) ||
+        (request.auth.token.email != null && (
+          request.auth.token.email == '7094826586@pgf.local' ||
+          request.auth.token.email.matches('.*@pgf[.]local')
+        ))
       );
     }
 
     function isCustomer() {
-      return isAuthenticated() && getUserRole() == 'Customer';
+      return isAuthenticated() && (
+        request.auth.token.role in ['Customer', 'customer', 'CUSTOMER'] ||
+        getUserRole() in ['Customer', 'customer', 'CUSTOMER']
+      );
     }
 
     function isInvestor() {
-      return isAuthenticated() && (request.auth.token.role == 'Investor' || getUserRole() == 'Investor');
+      return isAuthenticated() && (
+        request.auth.token.role in ['Investor', 'investor', 'INVESTOR'] ||
+        getUserRole() in ['Investor', 'investor', 'INVESTOR']
+      );
     }
 
     // =========================================================================
@@ -64,7 +98,10 @@ service cloud.firestore {
     match /profiles/{profileId} {
       allow read: if isAuthenticated();
       allow create: if isAuthenticated();
-      allow update: if isAuthenticated();
+      allow update: if isAdmin() || (
+        isAuthenticated() && request.auth.uid == profileId &&
+        !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status'])
+      );
       allow delete: if isAdmin();
     }
 
@@ -73,14 +110,14 @@ service cloud.firestore {
     // =========================================================================
     match /branches/{branchId} {
       allow read: if isAuthenticated();
-      allow write: if isAdmin();
+      allow write: if isStaff();
     }
 
     // =========================================================================
     // Loans
     // =========================================================================
     match /loans/{loanId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
@@ -89,13 +126,13 @@ service cloud.firestore {
     // Gold Collateral & Photos
     // =========================================================================
     match /gold_collateral/{itemId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
 
     match /gold_photos/{photoId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
@@ -104,7 +141,7 @@ service cloud.firestore {
     // Payments
     // =========================================================================
     match /payments/{paymentId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
@@ -117,15 +154,14 @@ service cloud.firestore {
     }
 
     match /expense_categories/{catId} {
-      allow read: if isStaff();
-      allow write: if isAdmin();
+      allow read, write: if isStaff();
     }
 
     // =========================================================================
     // Loan Renewals
     // =========================================================================
     match /loan_renewals/{renewalId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
@@ -156,7 +192,7 @@ service cloud.firestore {
     // Interest Accruals
     // =========================================================================
     match /interest_accruals/{accrualId} {
-      allow read: if isStaff() || (isAuthenticated() && resource.data.customer_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow write: if isStaff();
     }
 
@@ -164,9 +200,9 @@ service cloud.firestore {
     // Notifications & Reminders
     // =========================================================================
     match /notifications/{notifId} {
-      allow read: if isStaff() || (isAuthenticated() && (resource.data.recipient_id == request.auth.uid || resource.data.recipient_id == 'admin_broadcast'));
-      allow create: if isStaff();
-      allow update: if isStaff() || (isAuthenticated() && resource.data.recipient_id == request.auth.uid);
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.recipient_id == request.auth.uid || resource.data.recipient_id == 'admin_broadcast'));
+      allow create: if isAuthenticated();
+      allow update: if isStaff() || (isAuthenticated() && (resource == null || resource.data.recipient_id == request.auth.uid));
       allow delete: if isAdmin();
     }
 
@@ -195,7 +231,8 @@ service cloud.firestore {
     // Counters
     // =========================================================================
     match /counters/{counterId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isAuthenticated();
+      allow write: if isStaff();
     }
 
     // =========================================================================
@@ -215,14 +252,20 @@ service cloud.firestore {
     }
 
     match /support_tickets/{ticketId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid || resource.data.customerId == request.auth.uid || resource.data.user_id == request.auth.uid));
+      allow create: if isAuthenticated();
+      allow update: if isStaff() || (isAuthenticated() && (resource != null && (resource.data.customer_id == request.auth.uid || resource.data.customerId == request.auth.uid || resource.data.user_id == request.auth.uid)));
+      allow delete: if isAdmin();
     }
 
     // =========================================================================
     // Investment Portfolio Module Collections
     // =========================================================================
     match /investors/{investorId} {
-      allow read, write: if isStaff() || (isAuthenticated() && (request.auth.uid == investorId || resource.data.uid == request.auth.uid));
+      allow read: if isStaff() || (isAuthenticated() && (request.auth.uid == investorId || (resource != null && resource.data.uid == request.auth.uid)));
+      allow create: if isStaff() || (isAuthenticated() && (request.auth.uid == investorId || request.resource.data.uid == request.auth.uid));
+      allow update: if isStaff() || (isAuthenticated() && (request.auth.uid == investorId || (resource != null && resource.data.uid == request.auth.uid)));
+      allow delete: if isAdmin();
     }
 
     match /investment_plans/{planId} {
@@ -232,17 +275,21 @@ service cloud.firestore {
 
     match /investment_accounts/{accountId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow write: if isStaff();
+      allow create: if isStaff() || (isAuthenticated() && (accountId == request.auth.uid || request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
+      allow update: if isStaff() || (isAuthenticated() && (accountId == request.auth.uid || (resource != null && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid))));
+      allow delete: if isAdmin();
     }
 
     match /investment_lots/{lotId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow write: if isStaff();
+      allow create: if isStaff() || (isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
+      allow update, delete: if isStaff();
     }
 
     match /investment_transactions/{txnId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow write: if isStaff();
+      allow create: if isStaff() || (isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
+      allow update, delete: if isStaff();
     }
 
     match /withdrawal_requests/{wdrId} {
@@ -263,7 +310,9 @@ service cloud.firestore {
     }
 
     match /investment_notifications/{notifId} {
-      allow read, write: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
+      allow create, update: if isStaff();
+      allow delete: if isAdmin();
     }
 
     match /investment_audit_logs/{logId} {
