@@ -11,9 +11,6 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
-    }
 
     function hasProfile() {
       return isAuthenticated() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
@@ -75,20 +72,6 @@ service cloud.firestore {
           request.auth.token.email == '7094826586@pgf.local' ||
           request.auth.token.email.matches('.*@pgf[.]local')
         ))
-      );
-    }
-
-    function isCustomer() {
-      return isAuthenticated() && (
-        request.auth.token.role in ['Customer', 'customer', 'CUSTOMER'] ||
-        getUserRole() in ['Customer', 'customer', 'CUSTOMER']
-      );
-    }
-
-    function isInvestor() {
-      return isAuthenticated() && (
-        request.auth.token.role in ['Investor', 'investor', 'INVESTOR'] ||
-        getUserRole() in ['Investor', 'investor', 'INVESTOR']
       );
     }
 
