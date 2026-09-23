@@ -91,3 +91,30 @@ export async function getNextBillSlogan(): Promise<AssignedSlogan> {
 export function getSloganById(sloganId: string): TamilSlogan | undefined {
   return TAMIL_SLOGANS.find((s) => s.slogan_id === sloganId);
 }
+
+/**
+ * Non-destructive peek at the upcoming Tamil slogan for pre-confirmation billing preview.
+ * Does NOT mutate the transaction counter.
+ */
+export async function peekNextBillSlogan(): Promise<AssignedSlogan> {
+  const counterRef = doc(db, 'counters', COUNTER_DOC);
+  try {
+    const snap = await getDoc(counterRef);
+    const current = snap.exists() ? (snap.data().value || 0) : 0;
+    const next = (current % TAMIL_SLOGANS.length) + 1;
+    const slogan = getSloganByIndex(next);
+    return {
+      sloganId: slogan.slogan_id,
+      sloganText: slogan.text,
+      sloganIndex: slogan.id,
+    };
+  } catch {
+    const fallbackIdx = (Date.now() % TAMIL_SLOGANS.length) + 1;
+    const slogan = getSloganByIndex(fallbackIdx);
+    return {
+      sloganId: slogan.slogan_id,
+      sloganText: slogan.text,
+      sloganIndex: slogan.id,
+    };
+  }
+}

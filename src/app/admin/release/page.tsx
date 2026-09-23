@@ -18,7 +18,11 @@ import {
   ArrowRight,
   ChevronRight,
   DollarSign,
-  Receipt
+  Receipt,
+  X,
+  Eye,
+  Edit3,
+  Share2
 } from 'lucide-react';
 import { db, auth } from '@/lib/firebase';
 import { collection, getDocs, getDoc, query, where, doc, addDoc } from 'firebase/firestore';
@@ -56,6 +60,9 @@ function GoldReleaseContent() {
   const [discountWaiver, setDiscountWaiver] = useState<number | ''>('');
   const [remarks, setRemarks] = useState<string>('Full settlement and gold collateral discharge upon closure');
   const [borrowerAcknowledged, setBorrowerAcknowledged] = useState(true);
+
+  // Settlement Preview Modal State (Pre-Commit)
+  const [showSettlementPreview, setShowSettlementPreview] = useState(false);
 
   // Release Result
   const [releaseResult, setReleaseResult] = useState<any | null>(null);
@@ -192,15 +199,26 @@ function GoldReleaseContent() {
     setError(null);
   };
 
-  // Submit Loan Release & Closure
-  const handleExecuteRelease = async (e: React.FormEvent) => {
+  // Open Settlement Preview Modal (Pre-commit)
+  const handleOpenSettlementPreview = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeLoan || !releaseDues) return;
-
-    if (!borrowerAcknowledged) {
-      setError('Borrower handover acknowledgment must be confirmed before release.');
+    if (!activeLoan || !releaseDues) {
+      setError('Please select an active loan account to calculate settlement dues.');
       return;
     }
+
+    if (!borrowerAcknowledged) {
+      setError('Borrower handover acknowledgment must be confirmed before proceeding to preview.');
+      return;
+    }
+
+    setError(null);
+    setShowSettlementPreview(true);
+  };
+
+  // Submit Loan Release & Closure (Post-confirmation)
+  const handleConfirmAndExecuteRelease = async () => {
+    if (!activeLoan || !releaseDues) return;
 
     setSubmitting(true);
     setError(null);
@@ -227,6 +245,7 @@ function GoldReleaseContent() {
         },
       });
 
+      setShowSettlementPreview(false);
       setReleaseResult({
         ...result,
         customerName: activeLoan.customer?.name || 'Customer',
@@ -243,6 +262,23 @@ function GoldReleaseContent() {
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const handleShareWhatsApp = () => {
+    if (!releaseResult || !activeLoan) return;
+    const phone = activeLoan.customer?.phone_primary ? activeLoan.customer.phone_primary.replace(/[^0-9]/g, '') : '';
+    const text = encodeURIComponent(
+      `*Pavithra Gold Finance - Gold Release & Loan Closure*\n` +
+      `Release Voucher: ${releaseResult.release_number}\n` +
+      `Loan No: ${releaseResult.loanNumber}\n` +
+      `Date: ${new Date(releaseResult.releaseDate || Date.now()).toLocaleDateString('en-IN')}\n` +
+      `Settlement Paid: ₹${Number(releaseResult.finalAmountPaid).toLocaleString('en-IN')}\n` +
+      `Remaining Balance: ₹0.00 (ZERO BALANCE - FULLY CLOSED)\n` +
+      `Gold Ornaments: ${releaseResult.goldCount} items discharged and handed over\n\n` +
+      `Thank you for banking with Pavithra Gold Finance!`
+    );
+    const url = phone ? `https://wa.me/91${phone.slice(-10)}?text=${text}` : `https://wa.me/?text=${text}`;
+    window.open(url, '_blank');
   };
 
   return (
@@ -296,7 +332,7 @@ function GoldReleaseContent() {
           <p className="text-xs text-gray-500">All loan accounts are currently closed or settled.</p>
         </div>
       ) : !success ? (
-        <form onSubmit={handleExecuteRelease} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <form onSubmit={handleOpenSettlementPreview} className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           {/* LEFT: Customer & Collateral Dossier */}
           <div className="space-y-6 lg:col-span-1">
             {/* Account Selector */}
@@ -538,18 +574,14 @@ function GoldReleaseContent() {
                 </label>
               </div>
 
-              {/* Submit Button */}
+              {/* Submit Button to open Preview */}
               <button
                 type="submit"
                 disabled={submitting || !releaseDues}
                 className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 disabled:bg-emerald-300 text-white font-bold text-xs uppercase tracking-wider rounded-xl transition flex items-center justify-center gap-2 shadow-lg shadow-emerald-600/20 cursor-pointer font-outfit"
               >
-                {submitting ? (
-                  <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                ) : (
-                  <ShieldCheck size={16} />
-                )}
-                Execute Full Loan Release & Generate Discharge Certificate ({formatINR(releaseDues?.finalReleaseAmount || 0)})
+                <Eye size={16} />
+                Preview Final Settlement &amp; Release Breakdown ({formatINR(releaseDues?.finalReleaseAmount || 0)}) &rarr;
               </button>
             </div>
           </div>
@@ -653,11 +685,169 @@ function GoldReleaseContent() {
 
             <button
               type="button"
+              onClick={handleShareWhatsApp}
+              className="px-5 py-2.5 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200 text-xs font-bold uppercase tracking-wider transition flex items-center gap-1.5 cursor-pointer font-outfit"
+            >
+              <Share2 size={14} /> Share WhatsApp
+            </button>
+
+            <button
+              type="button"
               onClick={() => router.push('/admin/statement')}
               className="px-5 py-2.5 rounded-xl bg-gray-900 hover:bg-black text-white text-xs font-bold uppercase tracking-wider transition cursor-pointer font-outfit"
             >
               View Customer Statement &rarr;
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* FINAL SETTLEMENT & RELEASE PREVIEW MODAL (PRE-COMMIT) */}
+      {showSettlementPreview && activeLoan && releaseDues && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-2xl overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 bg-gradient-to-r from-emerald-700 to-teal-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center border border-white/20">
+                  <ShieldCheck className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold font-outfit">Final Settlement &amp; Release Preview</h3>
+                  <p className="text-xs text-emerald-100">Review outstanding check and vault handover before committing</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettlementPreview(false)}
+                className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+              {/* Customer and Loan dossier */}
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 grid grid-cols-2 gap-3">
+                <div>
+                  <span className="text-gray-400 block text-[10px] uppercase tracking-wider">Customer Details</span>
+                  <strong className="text-gray-900 block text-sm">{activeLoan.customer?.name}</strong>
+                  <span className="text-blue-700 font-mono text-xs">
+                    ID: {activeLoan.customer?.customer_number || activeLoan.customer?.id?.substring(0, 8)} &middot; {activeLoan.customer?.phone_primary || 'N/A'}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-gray-400 block text-[10px] uppercase tracking-wider">Loan Account</span>
+                  <strong className="text-blue-800 font-mono block text-sm">{activeLoan.loan_number}</strong>
+                  <span className="text-gray-500 text-[11px]">
+                    Originated: {releaseDues.origDateStr} &middot; {releaseDues.daysElapsed} Days Active
+                  </span>
+                </div>
+              </div>
+
+              {/* Outstanding Check Breakdown */}
+              <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-emerald-950 flex items-center gap-1.5 text-xs">
+                    <Receipt className="w-4 h-4 text-emerald-700" />
+                    Outstanding Balance Check &amp; Settlement Waterfall
+                  </span>
+                  <span className="text-[10px] uppercase font-bold bg-emerald-200 text-emerald-900 px-2 py-0.5 rounded">
+                    Zero Balance Target
+                  </span>
+                </div>
+
+                <div className="space-y-2 bg-white p-3 rounded-lg border border-emerald-100">
+                  <div className="flex justify-between items-center py-1 border-b border-gray-100">
+                    <span className="text-gray-600">Remaining Principal Due:</span>
+                    <strong className="text-gray-900 font-mono">{formatINR(releaseDues.remainingPrincipal)}</strong>
+                  </div>
+                  <div className="flex justify-between items-center py-1 border-b border-gray-100">
+                    <span className="text-amber-800">Unpaid Accrued Interest ({releaseDues.daysElapsed} Days @ {releaseDues.apr}%):</span>
+                    <strong className="text-amber-800 font-mono">{formatINR(releaseDues.unpaidInterest)}</strong>
+                  </div>
+                  {releaseDues.penaltyNum > 0 && (
+                    <div className="flex justify-between items-center py-1 border-b border-gray-100">
+                      <span className="text-rose-700">Penalty / Overdue Surcharge:</span>
+                      <strong className="text-rose-700 font-mono">+ {formatINR(releaseDues.penaltyNum)}</strong>
+                    </div>
+                  )}
+                  {releaseDues.waiverNum > 0 && (
+                    <div className="flex justify-between items-center py-1 border-b border-gray-100">
+                      <span className="text-emerald-700">Special Discount / Interest Waiver:</span>
+                      <strong className="text-emerald-700 font-mono">- {formatINR(releaseDues.waiverNum)}</strong>
+                    </div>
+                  )}
+                  <div className="flex justify-between items-center pt-1 text-sm">
+                    <span className="font-bold text-emerald-900">Total Net Settlement Amount:</span>
+                    <strong className="text-emerald-700 font-outfit text-base font-bold">{formatINR(releaseDues.finalReleaseAmount)}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Payment Mode and Date */}
+              <div className="grid grid-cols-2 gap-3 bg-gray-50 border border-gray-200 rounded-xl p-3.5">
+                <div>
+                  <span className="text-gray-500 block text-[10px] uppercase tracking-wider">Settlement Payment Mode</span>
+                  <strong className="text-gray-900 text-xs block">{paymentMode}</strong>
+                  {transactionRef && <span className="text-[10px] text-gray-500 font-mono block">Ref: {transactionRef}</span>}
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-[10px] uppercase tracking-wider">Closure Effective Date</span>
+                  <strong className="text-gray-900 text-xs block">{new Date(releaseDate).toLocaleDateString('en-IN')}</strong>
+                </div>
+              </div>
+
+              {/* Vault Collateral Discharge Verification */}
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="bg-gray-100/70 px-3.5 py-2 font-bold text-gray-700 text-[11px] uppercase tracking-wider flex justify-between items-center">
+                  <span>Vault Ornaments for Handover ({goldItems.length})</span>
+                  <span className="text-emerald-700 font-bold">Physical Verification Complete</span>
+                </div>
+                <div className="divide-y divide-gray-100 max-h-32 overflow-y-auto">
+                  {goldItems.map((item, idx) => (
+                    <div key={idx} className="p-2 flex justify-between items-center text-[11px]">
+                      <div>
+                        <span className="font-bold text-gray-900">{idx + 1}. {item.item_description || 'Gold Ornament'}</span>
+                        <span className="text-gray-500 ml-2">({item.purity_karat || '22K'} &middot; Net: {(item.net_weight || 0).toFixed(2)}g)</span>
+                      </div>
+                      <span className="font-mono text-gray-600 bg-gray-100 px-2 py-0.5 rounded text-[10px]">
+                        Bin: {item.storage_bin_id || 'VAULT'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setShowSettlementPreview(false)}
+                className="px-4 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <Edit3 className="w-4 h-4" />
+                Edit Settlement
+              </button>
+
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={handleConfirmAndExecuteRelease}
+                className="px-6 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-emerald-600/20 cursor-pointer"
+              >
+                {submitting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Recording Closure...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    Confirm &amp; Execute Full Release
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

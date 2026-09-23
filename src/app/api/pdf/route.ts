@@ -263,6 +263,7 @@ export async function GET(req: NextRequest) {
     const isDownload = searchParams.get('download') === 'true';
     const customAmount = parseFloat(searchParams.get('amount') || '0');
     const format = searchParams.get('format') || 'a4';
+    const copy = searchParams.get('copy') || 'both';
 
     const params: any = {
       type: rawType,
@@ -278,6 +279,7 @@ export async function GET(req: NextRequest) {
       download: isDownload,
       customAmount,
       format,
+      copy,
     };
 
     return await generatePdfResponse(params, caller);
@@ -656,8 +658,9 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
 
   // Set up PDFKit (A4 or 80mm POS Thermal Roll)
   const isThermal = params.format === 'thermal';
+  const requestedCopy = (params.copy || 'both').toLowerCase();
   const docPdf = isThermal
-    ? new PDFDocument({ size: [226, 750], margin: 10 })
+    ? new PDFDocument({ size: requestedCopy === 'both' ? [226, 1400] : [226, 750], margin: 10 })
     : new PDFDocument({ size: 'A4', margin: 36 });
   const chunks: Buffer[] = [];
   docPdf.on('data', (chunk: Buffer) => chunks.push(chunk));
@@ -1044,302 +1047,303 @@ async function generatePdfResponse(params: any, caller?: { uid: string; role: Us
 
     if (isThermal) {
       // =======================================================================
-      // 80mm POS Thermal Receipt Layout
+      // 80mm POS Thermal Receipt Layout with Dual Copy Support
       // =======================================================================
-      let tY = 14;
-      docPdf.fillColor(brandBlue).fontSize(11).font('Helvetica-Bold').text(companyName.toUpperCase(), 10, tY, { width: 206, align: 'center' });
-      tY += 15;
-      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica').text(`${companyBranchName} • Ph: +91 ${companyPhone}`, 10, tY, { width: 206, align: 'center' });
-      tY += 10;
-      docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text(`GSTIN: ${companyGst} | CIN: ${companyCin}`, 10, tY, { width: 206, align: 'center' });
-      tY += 12;
-
-      docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
-      tY += 6;
-
-      docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica-Bold').text('PAYMENT RECEIPT', 10, tY, { width: 206, align: 'center' });
-      tY += 12;
-
-      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
-            .text(`Receipt No: ${paymentData?.receipt_number || '—'}`, 10, tY)
-            .text(`Date: ${todayStr}`, 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      docPdf.text(`Loan No: ${loanData?.loan_number || '—'}`, 10, tY)
-            .text(`Mode: ${paymentData?.mode || 'Cash'}`, 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      docPdf.text(`Customer: ${customerData?.name || loanData?.customer?.name || 'Customer'}`, 10, tY, { width: 206, ellipsis: true });
-      tY += 10;
-      docPdf.text(`Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 10, tY);
-      tY += 12;
-
-      docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
-      tY += 6;
-
-      docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('PAYMENT ALLOCATION', 10, tY);
-      tY += 10;
-      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
-            .text('Interest Cleared:', 10, tY)
-            .text(formatINR(interestPortion), 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      docPdf.text('Principal Reduction:', 10, tY)
-            .text(formatINR(principalPortion), 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      if (penaltyPortion > 0) {
-        docPdf.text('Penalty / Late Fee:', 10, tY)
-              .text(formatINR(penaltyPortion), 120, tY, { align: 'right', width: 96 });
+      const drawThermalReceiptCopy = (startY: number, copyLabel: string) => {
+        let tY = startY;
+        docPdf.fillColor(brandBlue).fontSize(11).font('Helvetica-Bold').text(companyName.toUpperCase(), 10, tY, { width: 206, align: 'center' });
+        tY += 15;
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica').text(`${companyBranchName} • Ph: +91 ${companyPhone}`, 10, tY, { width: 206, align: 'center' });
         tY += 10;
-      }
+        docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text(`GSTIN: ${companyGst} | CIN: ${companyCin}`, 10, tY, { width: 206, align: 'center' });
+        tY += 12;
 
-      docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
-      tY += 6;
+        docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
+        tY += 6;
 
-      docPdf.fillColor(brandBlue).fontSize(8.5).font('Helvetica-Bold')
-            .text('TOTAL RECEIVED:', 10, tY)
-            .text(formatINR(paidAmt), 110, tY, { align: 'right', width: 106 });
-      tY += 14;
+        docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica-Bold').text(`PAYMENT RECEIPT • ${copyLabel.toUpperCase()}`, 10, tY, { width: 206, align: 'center' });
+        tY += 12;
 
-      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
-            .text('Remaining Principal:', 10, tY)
-            .text(formatINR(remainingPrincipal), 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      docPdf.text('Remaining Interest:', 10, tY)
-            .text(formatINR(remainingInterest), 120, tY, { align: 'right', width: 96 });
-      tY += 10;
-      docPdf.font('Helvetica-Bold')
-            .text('Total Outstanding:', 10, tY)
-            .text(formatINR(totalOutstanding), 120, tY, { align: 'right', width: 96 });
-      tY += 14;
-
-      // Tamil Slogan on Thermal
-      if (billSloganText) {
-        if (hasTamilFont) {
-          docPdf.fillColor('#78350f').fontSize(7.5).font('TamilFont')
-                .text(`“ ${billSloganText} ”`, 10, tY, { width: 206, align: 'center' });
-        } else {
-          docPdf.fillColor('#78350f').fontSize(7).font('Helvetica-Bold')
-                .text(`“ ${billSloganText} ”`, 10, tY, { width: 206, align: 'center' });
-        }
-        tY += 24;
-      }
-
-      // QR Verification Code
-      if (qrDataUri) {
-        try {
-          docPdf.image(qrDataUri, 83, tY, { width: 60, height: 60 });
-          tY += 64;
-        } catch {}
-      }
-
-      docPdf.fillColor(textMuted).fontSize(5.5).font('Helvetica')
-            .text('Thank you for choosing Pavithra Gold Finance.', 10, tY, { width: 206, align: 'center' })
-            .text('Computer-generated receipt • Signature not required.', 10, tY + 8, { width: 206, align: 'center' });
-    } else {
-      // =======================================================================
-      // Standard A4 Receipt Layout
-      // =======================================================================
-      let docHeading = 'OFFICIAL MONEY RECEIPT (PLEDGE REPAYMENT)';
-      if (isBillDoc) docHeading = 'OFFICIAL REPAYMENT BILL & SETTLEMENT INVOICE';
-      else if (isInterestDoc) docHeading = 'OFFICIAL INTEREST REPAYMENT RECEIPT';
-      else if (isPrincipalDoc) docHeading = 'OFFICIAL PRINCIPAL REDUCTION RECEIPT';
-
-      drawStandardHeader(
-        docHeading,
-        isBillDoc ? `BILL NO: ${paymentData?.receipt_number || '—'}` : `RECEIPT NO: ${paymentData?.receipt_number || '—'}`
-      );
-
-      let curY = 138;
-
-    // Receipt Meta Box (Includes live customer KYC and pledge date)
-    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 68).fill().strokeColor(borderGray).rect(36, curY, 522, 68).stroke();
-    docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica')
-          .text(`Bill / Receipt Number: ${paymentData?.receipt_number || '—'}`, 44, curY + 7)
-          .text(`Payment Date & Time: ${paymentData?.payment_date ? new Date(paymentData.payment_date).toLocaleString('en-IN') : todayStr}`, 300, curY + 7)
-          .text(`Borrower Name: ${customerData?.name || loanData?.customer?.name || '—'}`, 44, curY + 19)
-          .text(`Customer ID: ${customerData?.customer_number || customerData?.id || '—'}`, 300, curY + 19)
-          .text(`Loan Account No: ${loanData?.loan_number || '—'}`, 44, curY + 31)
-          .text(`Pledge Date: ${loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr}`, 300, curY + 31)
-          .text(`Primary Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 44, curY + 43)
-          .text(`Payment Mode: ${paymentData?.mode || 'UPI / Cash'} (Ref: ${paymentData?.transaction_ref || paymentData?.reference_note || paymentData?.utr || 'DIRECT-COUNTER'})`, 300, curY + 43);
-
-    if (paymentData?.interest_period_from && paymentData?.interest_period_to) {
-      docPdf.fillColor(brandGold).fontSize(7).font('Helvetica-Bold')
-            .text(`Interest Period Covered: ${paymentData.interest_period_from} to ${paymentData.interest_period_to}`, 44, curY + 55);
-      docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
-            .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
-    } else {
-      docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
-            .text(`KYC Verification: Aadhaar ${customerData?.national_id ? 'UID: ' + customerData.national_id : 'Verified'}  |  PAN: ${customerData?.pan_number || 'On File'}`, 44, curY + 55)
-            .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
-    }
-
-    curY += 76;
-
-    // PLEDGED GOLD COLLATERAL & ORNAMENT INVENTORY (with weights, purity, rate, and photo)
-    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('PLEDGED GOLD COLLATERAL & ORNAMENT DETAILS', 36, curY);
-    curY += 11;
-
-    docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
-    docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
-          .text('#', 42, curY + 3.5)
-          .text('Ornament Description', 58, curY + 3.5)
-          .text('Purity', 210, curY + 3.5)
-          .text('Gross Wt', 260, curY + 3.5)
-          .text('Stone Wt', 310, curY + 3.5)
-          .text('Net Wt', 360, curY + 3.5)
-          .text('Gold Rate/g', 410, curY + 3.5)
-          .text('Valuation', 475, curY + 3.5);
-
-    curY += 15;
-    let recGross = 0, recStone = 0, recNet = 0, recVal = 0;
-
-    if (goldItems.length > 0) {
-      goldItems.slice(0, 3).forEach((item, idx) => {
-        const itemVal = item.valuation_inr || (item.net_weight * (item.market_rate_per_gram || item.gold_rate_per_gram || 5400));
-        docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
         docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
-              .text(String(idx + 1), 42, curY + 3)
-              .text(item.item_description || item.ornament_type || 'Gold Item', 58, curY + 3, { width: 145, ellipsis: true })
-              .text(item.purity_karat || '22K', 210, curY + 3)
-              .text(`${(item.gross_weight || item.weight_grams || 0).toFixed(2)}g`, 260, curY + 3)
-              .text(`${(item.stone_weight || 0).toFixed(2)}g`, 310, curY + 3)
-              .text(`${(item.net_weight || item.weight_grams || 0).toFixed(2)}g`, 360, curY + 3)
-              .text(formatINR(item.market_rate_per_gram || item.gold_rate_per_gram || 5400), 410, curY + 3)
-              .text(formatINR(itemVal), 475, curY + 3);
+              .text(`Receipt No: ${paymentData?.receipt_number || '—'}`, 10, tY)
+              .text(`Date: ${todayStr}`, 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        docPdf.text(`Loan No: ${loanData?.loan_number || '—'}`, 10, tY)
+              .text(`Mode: ${paymentData?.mode || 'Cash'}`, 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        docPdf.text(`Customer: ${customerData?.name || loanData?.customer?.name || 'Customer'}`, 10, tY, { width: 206, ellipsis: true });
+        tY += 10;
+        docPdf.text(`Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 10, tY);
+        tY += 12;
 
-        recGross += item.gross_weight || item.weight_grams || 0;
-        recStone += item.stone_weight || 0;
-        recNet += item.net_weight || item.weight_grams || 0;
-        recVal += itemVal;
-        curY += 14;
-      });
-    } else {
-      docPdf.fillColor('#ffffff').rect(36, curY, 522, 14).fill();
-      docPdf.fillColor(textMuted).fontSize(6.5).font('Helvetica').text('Gold ornament records verified under safe custody.', 42, curY + 3);
-      curY += 14;
-    }
+        docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
+        tY += 6;
 
-    // Totals line for Collateral
-    docPdf.fillColor('#e2e8f0').rect(36, curY, 522, 14).fill();
-    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
-          .text('COLLATERAL TOTALS:', 58, curY + 3)
-          .text(`${recGross.toFixed(2)}g`, 260, curY + 3)
-          .text(`${recStone.toFixed(2)}g`, 310, curY + 3)
-          .text(`${recNet.toFixed(2)}g`, 360, curY + 3)
-          .text(formatINR(recVal), 475, curY + 3);
+        docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('PAYMENT ALLOCATION', 10, tY);
+        tY += 10;
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+              .text('Interest Cleared:', 10, tY)
+              .text(formatINR(interestPortion), 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        docPdf.text('Principal Reduction:', 10, tY)
+              .text(formatINR(principalPortion), 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        if (penaltyPortion > 0) {
+          docPdf.text('Penalty / Late Fee:', 10, tY)
+                .text(formatINR(penaltyPortion), 120, tY, { align: 'right', width: 96 });
+          tY += 10;
+        }
 
-    curY += 18;
+        docPdf.strokeColor(borderGray).lineWidth(0.5).dash(2, { space: 2 }).moveTo(10, tY).lineTo(216, tY).stroke().undash();
+        tY += 6;
 
-    // Photographic Evidence (Embedded Gold Photos - IMG-01, IMG-02)
-    const recPhotoUrls = getCollateralPhotoUrls(goldItems).slice(0, 3);
-    if (recPhotoUrls.length > 0) {
-      docPdf.fillColor(brandBlue).fontSize(7).font('Helvetica-Bold').text('COLLATERAL PHOTOGRAPHIC EVIDENCE (VAULT RECORD):', 36, curY);
-      curY += 10;
-      let photoX = 36;
-      for (const pUrl of recPhotoUrls) {
-        try {
-          const buf = await fetchImageBuffer(pUrl);
-          if (buf) {
-            const pUri = toDataUri(buf, 'image/jpeg');
-            if (pUri) {
-              docPdf.image(pUri, photoX, curY, { width: 55, height: 38, fit: [55, 38] });
-            }
+        docPdf.fillColor(brandBlue).fontSize(8.5).font('Helvetica-Bold')
+              .text('TOTAL RECEIVED:', 10, tY)
+              .text(formatINR(paidAmt), 110, tY, { align: 'right', width: 106 });
+        tY += 14;
+
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+              .text('Remaining Principal:', 10, tY)
+              .text(formatINR(remainingPrincipal), 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        docPdf.text('Remaining Interest:', 10, tY)
+              .text(formatINR(remainingInterest), 120, tY, { align: 'right', width: 96 });
+        tY += 10;
+        docPdf.font('Helvetica-Bold')
+              .text('Total Outstanding:', 10, tY)
+              .text(formatINR(totalOutstanding), 120, tY, { align: 'right', width: 96 });
+        tY += 14;
+
+        // Tamil Slogan on Thermal
+        if (billSloganText) {
+          if (hasTamilFont) {
+            docPdf.fillColor('#78350f').fontSize(7.5).font('TamilFont')
+                  .text(`“ ${billSloganText} ”`, 10, tY, { width: 206, align: 'center' });
+          } else {
+            docPdf.fillColor('#78350f').fontSize(7).font('Helvetica-Bold')
+                  .text(`“ ${billSloganText} ”`, 10, tY, { width: 206, align: 'center' });
           }
-        } catch {}
-        photoX += 65;
-      }
-      curY += 44;
-    }
+          tY += 24;
+        }
 
-    // Payment Allocation Table
-    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('REPAYMENT ALLOCATION BREAKDOWN', 36, curY);
-    curY += 11;
+        // QR Verification Code
+        if (qrDataUri) {
+          try {
+            docPdf.image(qrDataUri, 83, tY, { width: 60, height: 60 });
+            tY += 64;
+          } catch {}
+        }
 
-    docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
-    docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
-          .text('#', 44, curY + 3.5)
-          .text('Payment Component', 70, curY + 3.5)
-          .text('Accounting Type', 280, curY + 3.5)
-          .text('Amount Credited', 450, curY + 3.5, { align: 'right', width: 96 });
+        docPdf.fillColor(textMuted).fontSize(5.5).font('Helvetica')
+              .text(`Pavithra Gold Finance • ${copyLabel}`, 10, tY, { width: 206, align: 'center' })
+              .text('Computer-generated receipt • Signature not required.', 10, tY + 8, { width: 206, align: 'center' });
+        return tY + 24;
+      };
 
-    curY += 15;
-
-    const rows = [
-      { num: '1', name: 'Accrued Interest Cleared', type: 'Interest Ledger Credit', amt: interestPortion },
-      { num: '2', name: 'Principal Balance Reduction', type: 'Principal Reduction', amt: principalPortion },
-      { num: '3', name: 'Late Fee / Penal Interest', type: 'Penalty Clearance', amt: penaltyPortion },
-    ];
-
-    rows.forEach((r, idx) => {
-      docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
-      docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
-            .text(r.num, 44, curY + 3)
-            .text(r.name, 70, curY + 3)
-            .text(r.type, 280, curY + 3)
-            .text(formatINR(r.amt), 450, curY + 3, { align: 'right', width: 96 });
-      curY += 14;
-    });
-
-    // Total Paid Line
-    docPdf.fillColor('#dbeafe').rect(36, curY, 522, 18).fill();
-    docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold')
-          .text('TOTAL AMOUNT RECEIVED (NET PAID):', 70, curY + 4)
-          .text(formatINR(paidAmt), 450, curY + 4, { align: 'right', width: 96 });
-
-    curY += 21;
-
-    // Amount in words
-    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica-Bold')
-          .text(`Amount in Words: ${numberToIndianWords(paidAmt)}`, 36, curY);
-
-    curY += 14;
-
-    // Outstanding Status After This Payment
-    const remainingPrincipal = loanData ? Math.max(0, (loanData.principal_amount || 0) - (loanData.total_principal_paid || 0)) : 0;
-    const remainingInterest = loanData?.outstanding_interest || 0;
-    const totalOutstanding = remainingPrincipal + remainingInterest;
-
-    docPdf.fillColor(lightCardBg).rect(36, curY, 522, 46).fill().strokeColor(borderGray).rect(36, curY, 522, 46).stroke();
-    docPdf.fillColor(brandBlue).fontSize(7.5).font('Helvetica-Bold').text('LOAN POSITION POST-TRANSACTION', 44, curY + 5);
-    docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
-          .text(`Remaining Principal: ${formatINR(remainingPrincipal)}`, 44, curY + 17)
-          .text(`Remaining Interest: ${formatINR(remainingInterest)}`, 200, curY + 17)
-          .text(`Total Outstanding: ${formatINR(totalOutstanding)}`, 370, curY + 17)
-          .text(`Next Repayment Due Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : 'As per monthly schedule'}`, 44, curY + 30)
-          .text(`Loan Status: ${loanData?.status || 'Active'}`, 300, curY + 30);
-
-    curY += 54;
-
-    // Signatures
-    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(36, curY, 255, 38).stroke();
-    docPdf.strokeColor(borderGray).lineWidth(0.5).rect(303, curY, 255, 38).stroke();
-
-    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Pledgor Repayment Acknowledgment', 44, curY + 26);
-    docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold').text(`For ${companyName.toUpperCase()}`, 311, curY + 5);
-    docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Authorized Cashier / Cash Counter Signatory', 311, curY + 26);
-
-    // --------------------------------------------------------------------------
-    // ROTATING TAMIL SLOGAN BANNER (Bill Slogan System — 300 Unique Slogans)
-    // --------------------------------------------------------------------------
-    if (billSloganText) {
-      curY += 44;
-      docPdf.fillColor('#fffbeb').rect(36, curY, 522, 34).fill()
-            .strokeColor('#fde68a').lineWidth(0.8).rect(36, curY, 522, 34).stroke();
-
-      docPdf.fillColor('#92400e').fontSize(5.5).font('Helvetica-Bold')
-            .text(`OFFICIAL BILL SLOGAN • ${billSloganId || 'PGF-SLOGAN'}`, 44, curY + 4);
-
-      if (hasTamilFont) {
-        docPdf.fillColor('#78350f').fontSize(8.5).font('TamilFont')
-              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+      if (requestedCopy === 'customer') {
+        drawThermalReceiptCopy(14, 'Customer Copy');
+      } else if (requestedCopy === 'office') {
+        drawThermalReceiptCopy(14, 'Office Copy');
       } else {
-        docPdf.fillColor('#78350f').fontSize(8).font('Helvetica-Bold')
-              .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+        const nextY = drawThermalReceiptCopy(14, 'Customer Copy');
+        docPdf.strokeColor(borderGray).lineWidth(0.8).dash(4, { space: 3 }).moveTo(10, nextY + 10).lineTo(216, nextY + 10).stroke().undash();
+        docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('✂ - - - - - - - - CUT HERE - - - - - - - -', 10, nextY + 13, { width: 206, align: 'center' });
+        drawThermalReceiptCopy(nextY + 28, 'Office Copy');
       }
+    } else {
+      // =======================================================================
+      // Standard A4 Receipt Layout with Dual Copy Support
+      // =======================================================================
+      const drawA4ReceiptCopy = (copyLabel: 'Customer Copy' | 'Office Copy') => {
+        let docHeading = 'OFFICIAL MONEY RECEIPT (PLEDGE REPAYMENT)';
+        if (isBillDoc) docHeading = 'OFFICIAL REPAYMENT BILL & SETTLEMENT INVOICE';
+        else if (isInterestDoc) docHeading = 'OFFICIAL INTEREST REPAYMENT RECEIPT';
+        else if (isPrincipalDoc) docHeading = 'OFFICIAL PRINCIPAL REDUCTION RECEIPT';
 
-      docPdf.fillColor('#b45309').fontSize(5).font('Helvetica')
-            .text('Pavithra Gold Finance • Trusted Gold Loan Partner • Tamil Nadu', 44, curY + 24, { width: 506, align: 'center' });
+        drawStandardHeader(
+          docHeading,
+          isBillDoc 
+            ? `BILL NO: ${paymentData?.receipt_number || '—'} [${copyLabel.toUpperCase()}]` 
+            : `RECEIPT NO: ${paymentData?.receipt_number || '—'} [${copyLabel.toUpperCase()}]`
+        );
+
+        let curY = 138;
+
+        // Receipt Meta Box (Includes live customer KYC and pledge date)
+        docPdf.fillColor(lightCardBg).rect(36, curY, 522, 68).fill().strokeColor(borderGray).rect(36, curY, 522, 68).stroke();
+        docPdf.fillColor(brandDark).fontSize(7.5).font('Helvetica')
+              .text(`Bill / Receipt Number: ${paymentData?.receipt_number || '—'}`, 44, curY + 7)
+              .text(`Payment Date & Time: ${paymentData?.payment_date ? new Date(paymentData.payment_date).toLocaleString('en-IN') : todayStr}`, 300, curY + 7)
+              .text(`Borrower Name: ${customerData?.name || loanData?.customer?.name || '—'}`, 44, curY + 19)
+              .text(`Customer ID: ${customerData?.customer_number || customerData?.id || '—'}`, 300, curY + 19)
+              .text(`Loan Account No: ${loanData?.loan_number || '—'}`, 44, curY + 31)
+              .text(`Pledge Date: ${loanData?.origination_date ? new Date(loanData.origination_date).toLocaleDateString('en-IN') : todayStr}`, 300, curY + 31)
+              .text(`Primary Mobile: ${customerData?.phone_primary ? '+91 ' + customerData.phone_primary : '—'}`, 44, curY + 43)
+              .text(`Payment Mode: ${paymentData?.mode || 'UPI / Cash'} (Ref: ${paymentData?.transaction_ref || paymentData?.reference_note || paymentData?.utr || 'DIRECT-COUNTER'})`, 300, curY + 43);
+
+        if (paymentData?.interest_period_from && paymentData?.interest_period_to) {
+          docPdf.fillColor(brandGold).fontSize(7).font('Helvetica-Bold')
+                .text(`Interest Period Covered: ${paymentData.interest_period_from} to ${paymentData.interest_period_to}`, 44, curY + 55);
+          docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+                .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
+        } else {
+          docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+                .text(`KYC Verification: Aadhaar ${customerData?.national_id ? 'UID: ' + customerData.national_id : 'Verified'}  |  PAN: ${customerData?.pan_number || 'On File'}`, 44, curY + 55)
+                .text(`Original Principal: ${formatINR(loanData?.principal_amount || 0)}  |  APR: ${loanData?.interest_rate_apr || 18}%`, 300, curY + 55);
+        }
+
+        curY += 76;
+
+        // PLEDGED GOLD COLLATERAL & ORNAMENT INVENTORY (with weights, purity, rate, and photo)
+        docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('PLEDGED GOLD COLLATERAL & ORNAMENT DETAILS', 36, curY);
+        curY += 11;
+
+        docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
+        docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
+              .text('#', 42, curY + 3.5)
+              .text('Ornament Description', 58, curY + 3.5)
+              .text('Purity', 210, curY + 3.5)
+              .text('Gross Wt', 260, curY + 3.5)
+              .text('Stone Wt', 310, curY + 3.5)
+              .text('Net Wt', 360, curY + 3.5)
+              .text('Gold Rate/g', 410, curY + 3.5)
+              .text('Valuation', 475, curY + 3.5);
+
+        curY += 15;
+        let recGross = 0, recStone = 0, recNet = 0, recVal = 0;
+
+        if (goldItems.length > 0) {
+          goldItems.slice(0, 3).forEach((item, idx) => {
+            const itemVal = item.valuation_inr || (item.net_weight * (item.market_rate_per_gram || item.gold_rate_per_gram || 5400));
+            docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
+            docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+                  .text(String(idx + 1), 42, curY + 3)
+                  .text(item.item_description || item.ornament_type || 'Gold Item', 58, curY + 3, { width: 145, ellipsis: true })
+                  .text(item.purity_karat || '22K', 210, curY + 3)
+                  .text(`${(item.gross_weight || item.weight_grams || 0).toFixed(2)}g`, 260, curY + 3)
+                  .text(`${(item.stone_weight || 0).toFixed(2)}g`, 310, curY + 3)
+                  .text(`${(item.net_weight || item.weight_grams || 0).toFixed(2)}g`, 360, curY + 3)
+                  .text(formatINR(item.market_rate_per_gram || item.gold_rate_per_gram || 5400), 410, curY + 3)
+                  .text(formatINR(itemVal), 475, curY + 3);
+
+            recGross += item.gross_weight || item.weight_grams || 0;
+            recStone += item.stone_weight || 0;
+            recNet += item.net_weight || item.weight_grams || 0;
+            recVal += itemVal;
+            curY += 14;
+          });
+        } else {
+          docPdf.fillColor('#ffffff').rect(36, curY, 522, 14).fill();
+          docPdf.fillColor(textMuted).fontSize(6.5).font('Helvetica').text('Gold ornament records verified under safe custody.', 42, curY + 3);
+          curY += 14;
+        }
+
+        // Totals line for Collateral
+        docPdf.fillColor('#e2e8f0').rect(36, curY, 522, 14).fill();
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold')
+              .text('COLLATERAL TOTALS:', 58, curY + 3)
+              .text(`${recGross.toFixed(2)}g`, 260, curY + 3)
+              .text(`${recStone.toFixed(2)}g`, 310, curY + 3)
+              .text(`${recNet.toFixed(2)}g`, 360, curY + 3)
+              .text(formatINR(recVal), 475, curY + 3);
+
+        curY += 18;
+
+        // Payment Allocation Table (Waterfall)
+        docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold').text('REPAYMENT ALLOCATION BREAKDOWN (WATERFALL: PENALTY → INTEREST → PRINCIPAL)', 36, curY);
+        curY += 11;
+
+        docPdf.fillColor(brandDark).rect(36, curY, 522, 15).fill();
+        docPdf.fillColor('#ffffff').fontSize(6.5).font('Helvetica-Bold')
+              .text('#', 44, curY + 3.5)
+              .text('Payment Component', 70, curY + 3.5)
+              .text('Accounting Type & Priority', 280, curY + 3.5)
+              .text('Amount Credited', 450, curY + 3.5, { align: 'right', width: 96 });
+
+        curY += 15;
+
+        const rows = [
+          { num: '1', name: 'Late Fee / Penal Interest', type: 'Penalty Clearance (Priority 1)', amt: penaltyPortion },
+          { num: '2', name: 'Accrued Interest Cleared', type: 'Interest Ledger Credit (Priority 2)', amt: interestPortion },
+          { num: '3', name: 'Principal Balance Reduction', type: 'Principal Reduction (Priority 3)', amt: principalPortion },
+        ];
+
+        rows.forEach((r, idx) => {
+          docPdf.fillColor(idx % 2 === 0 ? '#f8fafc' : '#ffffff').rect(36, curY, 522, 14).fill();
+          docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica')
+                .text(r.num, 44, curY + 3)
+                .text(r.name, 70, curY + 3)
+                .text(r.type, 280, curY + 3)
+                .text(formatINR(r.amt), 450, curY + 3, { align: 'right', width: 96 });
+          curY += 14;
+        });
+
+        // Total Paid Line
+        docPdf.fillColor('#dbeafe').rect(36, curY, 522, 18).fill();
+        docPdf.fillColor(brandBlue).fontSize(8).font('Helvetica-Bold')
+              .text('TOTAL AMOUNT RECEIVED (NET PAID):', 70, curY + 4)
+              .text(formatINR(paidAmt), 450, curY + 4, { align: 'right', width: 96 });
+
+        curY += 21;
+
+        // Amount in words
+        docPdf.fillColor(brandDark).fontSize(7).font('Helvetica-Bold')
+              .text(`Amount in Words: ${numberToIndianWords(paidAmt)}`, 36, curY);
+
+        curY += 14;
+
+        // Outstanding Status After This Payment
+        docPdf.fillColor(lightCardBg).rect(36, curY, 522, 46).fill().strokeColor(borderGray).rect(36, curY, 522, 46).stroke();
+        docPdf.fillColor(brandBlue).fontSize(7.5).font('Helvetica-Bold').text('LOAN POSITION POST-TRANSACTION', 44, curY + 5);
+        docPdf.fillColor(brandDark).fontSize(7).font('Helvetica')
+              .text(`Remaining Principal: ${formatINR(remainingPrincipal)}`, 44, curY + 17)
+              .text(`Remaining Interest: ${formatINR(remainingInterest)}`, 200, curY + 17)
+              .text(`Total Outstanding: ${formatINR(totalOutstanding)}`, 370, curY + 17)
+              .text(`Next Repayment Due Date: ${loanData?.maturity_date ? new Date(loanData.maturity_date).toLocaleDateString('en-IN') : 'As per monthly schedule'}`, 44, curY + 30)
+              .text(`Loan Status: ${loanData?.status || 'Active'}`, 300, curY + 30);
+
+        curY += 54;
+
+        // Signatures
+        docPdf.strokeColor(borderGray).lineWidth(0.5).rect(36, curY, 255, 38).stroke();
+        docPdf.strokeColor(borderGray).lineWidth(0.5).rect(303, curY, 255, 38).stroke();
+
+        docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Pledgor Repayment Acknowledgment', 44, curY + 26);
+        docPdf.fillColor(brandDark).fontSize(6.5).font('Helvetica-Bold').text(`For ${companyName.toUpperCase()}`, 311, curY + 5);
+        docPdf.fillColor(textMuted).fontSize(6).font('Helvetica').text('Authorized Cashier / Cash Counter Signatory', 311, curY + 26);
+
+        // Rotating Tamil Slogan Banner
+        if (billSloganText) {
+          curY += 44;
+          docPdf.fillColor('#fffbeb').rect(36, curY, 522, 34).fill()
+                .strokeColor('#fde68a').lineWidth(0.8).rect(36, curY, 522, 34).stroke();
+
+          docPdf.fillColor('#92400e').fontSize(5.5).font('Helvetica-Bold')
+                .text(`OFFICIAL BILL SLOGAN • ${billSloganId || 'PGF-SLOGAN'}`, 44, curY + 4);
+
+          if (hasTamilFont) {
+            docPdf.fillColor('#78350f').fontSize(8.5).font('TamilFont')
+                  .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+          } else {
+            docPdf.fillColor('#78350f').fontSize(8).font('Helvetica-Bold')
+                  .text(`“ ${billSloganText} ”`, 44, curY + 13, { width: 506, align: 'center' });
+          }
+
+          docPdf.fillColor('#b45309').fontSize(5).font('Helvetica')
+                .text(`Pavithra Gold Finance • Trusted Gold Loan Partner • ${copyLabel.toUpperCase()}`, 44, curY + 24, { width: 506, align: 'center' });
+        }
+      };
+
+      if (requestedCopy === 'customer') {
+        drawA4ReceiptCopy('Customer Copy');
+      } else if (requestedCopy === 'office') {
+        drawA4ReceiptCopy('Office Copy');
+      } else {
+        drawA4ReceiptCopy('Customer Copy');
+        docPdf.addPage();
+        drawA4ReceiptCopy('Office Copy');
+      }
     }
-  }
 
   // --------------------------------------------------------------------------
   // 3b. LOAN RENEWAL RECEIPT & EXTENSION AGREEMENT (renewal_receipt / renewal)

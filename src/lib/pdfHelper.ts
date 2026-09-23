@@ -65,6 +65,7 @@ export interface PdfParams {
   filename?: string | null;
   token?: string | null;
   format?: 'a4' | 'thermal' | null;
+  copy?: 'customer' | 'office' | 'both' | null;
   payload?: any;
 }
 
@@ -90,6 +91,7 @@ export function getPdfApiUrl(params: PdfParams, token?: string | null): string {
   if (params.download) queryParams.set('download', 'true');
   if (params.filename) queryParams.set('filename', params.filename);
   if (params.format) queryParams.set('format', params.format);
+  if (params.copy) queryParams.set('copy', params.copy);
 
   const effectiveToken = token || params.token;
   if (effectiveToken) {
@@ -144,6 +146,7 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
       download: true,
       token,
       format: params.format,
+      copy: params.copy,
       ...(params.payload || {})
     };
 
@@ -218,6 +221,8 @@ export async function printPdfDocument(params: PdfParams): Promise<void> {
       month: params.month,
       customAmount: params.amount,
       token,
+      format: params.format,
+      copy: params.copy,
       ...(params.payload || {})
     };
 

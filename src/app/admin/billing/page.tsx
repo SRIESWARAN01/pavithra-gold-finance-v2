@@ -25,15 +25,18 @@ import {
   Clock,
   Check,
   User,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Share2,
+  Edit3
 } from 'lucide-react';
 import { db } from '@/lib/firebase';
 import { collection, doc, getDoc, getDocs, query, where, limit, orderBy } from 'firebase/firestore';
 import { isFirebaseConfigured, getCurrentProfile } from '@/lib/auth';
-import { recordPayment, calculatePaymentSplit } from '@/lib/db/payments';
+import { recordPayment, calculatePaymentSplit, peekNextReceiptNumber } from '@/lib/db/payments';
 import { calculateLoanInterestSnapshot, toPaise, fromPaise } from '@/lib/db/interest';
 import { getActiveBankRePledgeByLoan } from '@/lib/db/repledge';
 import { createNotification } from '@/lib/db/notifications';
+import { peekNextBillSlogan, type AssignedSlogan } from '@/lib/db/slogans';
 import PDFPreviewModal from '@/components/PDFPreviewModal';
 import RePledgeCard from '@/components/RePledgeCard';
 import { getPdfApiUrl, downloadPdfDocument, printPdfDocument } from '@/lib/pdfHelper';
@@ -51,9 +54,14 @@ function BillingContent() {
 
   // Search State
   const [searchLoanNumber, setSearchLoanNumber] = useState(queryLoanId);
-  const [searchMobile, setSearchMobile] = useState('');
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
+  const [candidateLoans, setCandidateLoans] = useState<any[]>([]);
+  const [isCandidateModalOpen, setIsCandidateModalOpen] = useState(false);
+
+  // Pre-Commit Preview Slogan & Receipt No
+  const [previewSlogan, setPreviewSlogan] = useState<AssignedSlogan | null>(null);
+  const [previewReceiptNo, setPreviewReceiptNo] = useState<string>('');
 
   // Active Loan & Collateral Data
   const [activeLoan, setActiveLoan] = useState<any | null>(null);
@@ -97,12 +105,70 @@ function BillingContent() {
     penaltyCollection: 0,
   });
 
-  // Primary Loan Search Handler
-  const handleSearchLoan = async (searchTerm?: string) => {
-    const term = (searchTerm || searchLoanNumber).trim();
-    const mob = searchMobile.trim();
+  // Helper to load all relations & interest snapshot for an identified loan
+  const loadActiveLoanDetails = async (foundLoan: any, targetPaymentDate?: string) => {
+    // 1. Fetch Customer
+    if (foundLoan.customer_id) {
+      const custDoc = await getDoc(doc(db, 'profiles', foundLoan.customer_id));
+      if (custDoc.exists()) {
+        setActiveCustomer({ id: custDoc.id, ...custDoc.data() });
+      }
+    } else if (foundLoan.customer) {
+      setActiveCustomer(foundLoan.customer);
+    }
 
-    if (!term && !mob) return;
+    // 2. Fetch Collateral
+    const colSnap = await getDocs(
+      query(collection(db, 'gold_collateral'), where('loan_id', '==', foundLoan.id))
+    );
+    const items = colSnap.docs.map((d) => ({ id: d.id, ...d.data() } as GoldCollateral));
+    setActiveCollateral(items);
+
+    // 3. Fetch linked Bank Re-Pledge
+    try {
+      const rep = await getActiveBankRePledgeByLoan(foundLoan.id);
+      setActiveRepledge(rep);
+    } catch {
+      setActiveRepledge(null);
+    }
+
+    // 4. Fetch Payment history for interest calculation
+    const paySnap = await getDocs(
+      query(collection(db, 'payments'), where('loan_id', '==', foundLoan.id))
+    );
+    const paymentHistory = paySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+    // 5. Calculate centralized interest snapshot
+    const calcDate = targetPaymentDate || paymentDate || new Date().toISOString().split('T')[0];
+    const snapshot = calculateLoanInterestSnapshot(foundLoan, calcDate, paymentHistory);
+    setInterestSnapshot(snapshot);
+    setActiveLoan(foundLoan);
+
+    // 6. Default amount received to accrued interest
+    const interestDue = snapshot.outstandingInterest;
+    setInterestInput(interestDue > 0 ? interestDue : '');
+    setPrincipalInput('');
+    setAmountReceived(interestDue > 0 ? interestDue : '');
+  };
+
+  // Primary Loan Search Handler (supports Customer Name / Mobile / Loan ID / Pawn Ticket / QR)
+  const handleSearchLoan = async (searchTerm?: string) => {
+    let term = (searchTerm !== undefined ? searchTerm : searchLoanNumber).trim();
+    if (!term) return;
+
+    // Decode QR string if scanned (JSON format or URL)
+    if (term.startsWith('{') && term.endsWith('}')) {
+      try {
+        const parsed = JSON.parse(term);
+        term = (parsed.loanId || parsed.loan_id || parsed.loanNumber || parsed.loan_number || term).trim();
+      } catch {}
+    } else if (term.includes('loanId=')) {
+      const match = term.match(/loanId=([^&]+)/);
+      if (match) term = decodeURIComponent(match[1]).trim();
+    } else if (term.includes('/loans/')) {
+      const parts = term.split('/loans/');
+      if (parts[1]) term = parts[1].split(/[/?#]/)[0].trim();
+    }
 
     setSearchLoading(true);
     setSearchError(null);
@@ -111,39 +177,126 @@ function BillingContent() {
     try {
       let foundLoan: any = null;
 
-      if (term) {
-        // 1. Search by document ID
-        const docRef = doc(db, 'loans', term);
-        const docSnap = await getDoc(docRef);
-        if (docSnap.exists()) {
-          foundLoan = { id: docSnap.id, ...docSnap.data() };
+      // 1. Search by document ID directly
+      const docRef = doc(db, 'loans', term);
+      const docSnap = await getDoc(docRef);
+      if (docSnap.exists()) {
+        foundLoan = { id: docSnap.id, ...docSnap.data() };
+      }
+
+      // 2. Search by loan_number
+      if (!foundLoan) {
+        const qLoan = await getDocs(
+          query(collection(db, 'loans'), where('loan_number', '==', term), limit(1))
+        );
+        if (!qLoan.empty) {
+          foundLoan = { id: qLoan.docs[0].id, ...qLoan.docs[0].data() };
         } else {
-          // 2. Search by loan_number
-          const qSnap = await getDocs(
-            query(collection(db, 'loans'), where('loan_number', '==', term), limit(1))
+          const qLoanUpper = await getDocs(
+            query(collection(db, 'loans'), where('loan_number', '==', term.toUpperCase()), limit(1))
           );
-          if (!qSnap.empty) {
-            foundLoan = { id: qSnap.docs[0].id, ...qSnap.docs[0].data() };
+          if (!qLoanUpper.empty) {
+            foundLoan = { id: qLoanUpper.docs[0].id, ...qLoanUpper.docs[0].data() };
           }
         }
-      } else if (mob) {
-        // Search by customer mobile
-        const cSnap = await getDocs(
-          query(collection(db, 'profiles'), where('phone_primary', '==', mob), limit(1))
+      }
+
+      // 3. Search by pawn_ticket_number
+      if (!foundLoan) {
+        const qTicket = await getDocs(
+          query(collection(db, 'loans'), where('pawn_ticket_number', '==', term), limit(1))
         );
-        if (!cSnap.empty) {
-          const custId = cSnap.docs[0].id;
-          const lSnap = await getDocs(
-            query(collection(db, 'loans'), where('customer_id', '==', custId), limit(1))
+        if (!qTicket.empty) {
+          foundLoan = { id: qTicket.docs[0].id, ...qTicket.docs[0].data() };
+        } else {
+          const qTicketUpper = await getDocs(
+            query(collection(db, 'loans'), where('pawn_ticket_number', '==', term.toUpperCase()), limit(1))
           );
-          if (!lSnap.empty) {
-            foundLoan = { id: lSnap.docs[0].id, ...lSnap.docs[0].data() };
+          if (!qTicketUpper.empty) {
+            foundLoan = { id: qTicketUpper.docs[0].id, ...qTicketUpper.docs[0].data() };
+          }
+        }
+      }
+
+      // 4. Search by customer phone, customer ID, or customer name
+      if (!foundLoan) {
+        let matchedCustomerIds: string[] = [];
+
+        // Clean digits for phone matching
+        const cleanDigits = term.replace(/[^0-9]/g, '');
+        if (cleanDigits.length >= 7) {
+          const cSnap1 = await getDocs(
+            query(collection(db, 'profiles'), where('phone_primary', '==', term), limit(5))
+          );
+          cSnap1.docs.forEach((d) => matchedCustomerIds.push(d.id));
+
+          if (cleanDigits.length === 10) {
+            const cSnap2 = await getDocs(
+              query(collection(db, 'profiles'), where('phone_primary', '==', cleanDigits), limit(5))
+            );
+            cSnap2.docs.forEach((d) => matchedCustomerIds.push(d.id));
+          }
+        }
+
+        // Customer Number (e.g. PGF-CUST-...)
+        if (matchedCustomerIds.length === 0) {
+          const cSnapCustNo = await getDocs(
+            query(collection(db, 'profiles'), where('customer_number', '==', term.toUpperCase()), limit(5))
+          );
+          cSnapCustNo.docs.forEach((d) => matchedCustomerIds.push(d.id));
+        }
+
+        // Customer Name
+        if (matchedCustomerIds.length === 0 && term.length >= 2) {
+          const allProfilesSnap = await getDocs(query(collection(db, 'profiles'), limit(100)));
+          allProfilesSnap.docs.forEach((d) => {
+            const p = d.data();
+            if (p.name && p.name.toLowerCase().includes(term.toLowerCase())) {
+              matchedCustomerIds.push(d.id);
+            }
+          });
+        }
+
+        matchedCustomerIds = Array.from(new Set(matchedCustomerIds));
+
+        if (matchedCustomerIds.length > 0) {
+          const matchedLoans: any[] = [];
+          for (const cId of matchedCustomerIds.slice(0, 5)) {
+            const lSnap = await getDocs(
+              query(
+                collection(db, 'loans'),
+                where('customer_id', '==', cId),
+                where('status', 'in', ['Active', 'Due', 'Overdue', 'Grace_Period'])
+              )
+            );
+            for (const lDoc of lSnap.docs) {
+              const lData: any = { id: lDoc.id, ...lDoc.data() };
+              const custDoc = await getDoc(doc(db, 'profiles', cId));
+              if (custDoc.exists()) {
+                lData.customer = { id: custDoc.id, ...custDoc.data() };
+              }
+              matchedLoans.push(lData);
+            }
+          }
+
+          if (matchedLoans.length === 1) {
+            foundLoan = matchedLoans[0];
+          } else if (matchedLoans.length > 1) {
+            setCandidateLoans(matchedLoans);
+            setIsCandidateModalOpen(true);
+            setSearchLoading(false);
+            return;
+          } else {
+            setSearchError(`Customer was matched for '${term}', but has no active loans with balance due.`);
+            setActiveLoan(null);
+            setSearchLoading(false);
+            return;
           }
         }
       }
 
       if (!foundLoan) {
-        setSearchError(`No active loan found for '${term || mob}'. Please check the loan number.`);
+        setSearchError(`No active loan found for '${term}'. Search by Customer Name, Mobile, Loan ID, Pawn Ticket, or QR.`);
         setActiveLoan(null);
         return;
       }
@@ -155,46 +308,7 @@ function BillingContent() {
         return;
       }
 
-      // Fetch Customer
-      if (foundLoan.customer_id) {
-        const custDoc = await getDoc(doc(db, 'profiles', foundLoan.customer_id));
-        if (custDoc.exists()) {
-          setActiveCustomer({ id: custDoc.id, ...custDoc.data() });
-        }
-      }
-
-      // Fetch Collateral
-      const colSnap = await getDocs(
-        query(collection(db, 'gold_collateral'), where('loan_id', '==', foundLoan.id))
-      );
-      const items = colSnap.docs.map((d) => ({ id: d.id, ...d.data() } as GoldCollateral));
-      setActiveCollateral(items);
-
-      // Fetch linked Bank Re-Pledge
-      try {
-        const rep = await getActiveBankRePledgeByLoan(foundLoan.id);
-        setActiveRepledge(rep);
-      } catch {
-        setActiveRepledge(null);
-      }
-
-      // Fetch Payment history for interest calculation
-      const paySnap = await getDocs(
-        query(collection(db, 'payments'), where('loan_id', '==', foundLoan.id))
-      );
-      const paymentHistory = paySnap.docs.map((d) => ({ id: d.id, ...d.data() }));
-
-      // Calculate centralized interest snapshot
-      const calcDate = paymentDate || new Date().toISOString().split('T')[0];
-      const snapshot = calculateLoanInterestSnapshot(foundLoan, calcDate, paymentHistory);
-      setInterestSnapshot(snapshot);
-      setActiveLoan(foundLoan);
-
-      // Default amount received to accrued interest
-      const interestDue = snapshot.outstandingInterest;
-      setInterestInput(interestDue > 0 ? interestDue : '');
-      setPrincipalInput('');
-      setAmountReceived(interestDue > 0 ? interestDue : '');
+      await loadActiveLoanDetails(foundLoan);
     } catch (err: any) {
       console.error('Loan search error:', err);
       setSearchError(err.message || 'Error searching loan.');
@@ -395,14 +509,26 @@ function BillingContent() {
     setAmountReceived(Math.max(0, currentInterest + currentPrincipal + penVal - waivVal));
   };
 
-  // Confirmation Trigger
-  const handleOpenConfirmModal = (e: React.FormEvent) => {
+  // Confirmation Trigger with Live Slogan & Receipt Peeking
+  const handleOpenConfirmModal = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!activeLoan) return;
     if (numReceived <= 0) {
       alert('Please enter a valid amount received greater than zero.');
       return;
     }
+
+    try {
+      const [slogan, receiptNo] = await Promise.all([
+        peekNextBillSlogan(),
+        peekNextReceiptNumber(),
+      ]);
+      setPreviewSlogan(slogan);
+      setPreviewReceiptNo(receiptNo);
+    } catch (err) {
+      console.warn('Could not peek next slogan or receipt number:', err);
+    }
+
     setIsConfirmModalOpen(true);
   };
 
@@ -450,6 +576,34 @@ function BillingContent() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleWhatsAppShare = () => {
+    if (!lastCreatedPayment || !activeLoan) return;
+    const custName = activeCustomer?.name || 'Customer';
+    const rawPhone = activeCustomer?.phone_primary || '';
+    const phone = rawPhone.replace(/[^0-9]/g, '');
+    const receiptNo = lastCreatedPayment.receipt_number || 'N/A';
+    const slogan = lastCreatedPayment.slogan_text || previewSlogan?.sloganText || '';
+    const message = `*PAVITHRA GOLD FINANCE - PAYMENT RECEIPT*
+Receipt No: ${receiptNo}
+Customer: ${custName}
+Loan No: ${activeLoan.loan_number}
+Date: ${paymentDate}
+----------------------------------
+Amount Paid: Rs. ${numReceived.toLocaleString('en-IN')}
+Penalty Paid: Rs. ${penaltyCleared.toLocaleString('en-IN')}
+Interest Cleared: Rs. ${interestCleared.toLocaleString('en-IN')}
+Principal Reduced: Rs. ${principalReduction.toLocaleString('en-IN')}
+Remaining Principal: Rs. ${newPrincipalBalance.toLocaleString('en-IN')}
+Next Due / Maturity: ${activeLoan.maturity_date ? new Date(activeLoan.maturity_date).toLocaleDateString('en-IN') : 'N/A'}
+----------------------------------
+${slogan ? `"${slogan}"\n` : ''}Thank you for choosing Pavithra Gold Finance!`;
+
+    const url = phone.length >= 10
+      ? `https://wa.me/91${phone.slice(-10)}?text=${encodeURIComponent(message)}`
+      : `https://wa.me/?text=${encodeURIComponent(message)}`;
+    window.open(url, '_blank');
   };
 
   const filteredBills = bills.filter(b => {
@@ -519,17 +673,22 @@ function BillingContent() {
       {/* COLLECT PAYMENT VIEW */}
       {activeTab === 'collect' && (
         <div className="space-y-6">
-          {/* Prominent Search Bar */}
+          {/* Prominent Multi-Criteria Search Bar */}
           <div className="bg-white border border-gray-200 rounded-xl p-5 shadow-sm space-y-3">
-            <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
-              <Search size={14} className="text-blue-600" />
-              Loan Account Search
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="text-xs font-bold text-gray-700 uppercase tracking-wider flex items-center gap-1.5">
+                <Search size={14} className="text-blue-600" />
+                Select Customer / Loan Account
+              </h3>
+              <span className="text-[10px] text-gray-400 font-mono hidden sm:inline">
+                Customer Name &middot; Mobile &middot; Loan ID &middot; Pawn Ticket &middot; QR
+              </span>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               <div className="relative sm:col-span-2">
                 <input
                   type="text"
-                  placeholder="Enter Loan Number (e.g. PGF-LN-1001)..."
+                  placeholder="Search by Customer Name / Mobile / Loan ID / Pawn Ticket / QR..."
                   value={searchLoanNumber}
                   onChange={(e) => setSearchLoanNumber(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') handleSearchLoan(); }}
@@ -550,7 +709,7 @@ function BillingContent() {
                   ) : (
                     <>
                       <Search size={14} />
-                      Find Loan
+                      Find Account
                     </>
                   )}
                 </button>
@@ -563,6 +722,7 @@ function BillingContent() {
                       setActiveCollateral([]);
                       setSearchLoanNumber('');
                       setSuccess(false);
+                      setCandidateLoans([]);
                     }}
                     className="px-3.5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold transition"
                   >
@@ -579,6 +739,59 @@ function BillingContent() {
               </div>
             )}
           </div>
+
+          {/* Multiple Active Loans Candidate Selection Modal */}
+          {isCandidateModalOpen && candidateLoans.length > 0 && (
+            <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-4 shadow-2xl border border-gray-200 animate-in fade-in">
+                <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+                  <div>
+                    <h3 className="font-bold text-gray-900 text-sm">Select Active Loan</h3>
+                    <p className="text-xs text-gray-500">
+                      Multiple active accounts found for {candidateLoans[0].customer?.name || 'Customer'}:
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => setIsCandidateModalOpen(false)}
+                    className="text-gray-400 hover:text-gray-600 text-lg"
+                  >
+                    &times;
+                  </button>
+                </div>
+                <div className="space-y-2 max-h-80 overflow-y-auto">
+                  {candidateLoans.map((l) => (
+                    <button
+                      key={l.id}
+                      onClick={() => {
+                        setIsCandidateModalOpen(false);
+                        loadActiveLoanDetails(l);
+                      }}
+                      className="w-full text-left p-3.5 rounded-xl border border-gray-200 hover:border-blue-500 hover:bg-blue-50/50 transition flex items-center justify-between group cursor-pointer"
+                    >
+                      <div>
+                        <span className="font-bold text-blue-700 font-mono text-sm block">{l.loan_number}</span>
+                        <span className="text-[11px] text-gray-600 block">
+                          Principal: ₹{(l.principal_amount || 0).toLocaleString('en-IN')} &middot; Status: {l.status}
+                        </span>
+                        <span className="text-[10px] text-gray-400">
+                          Pledged: {l.origination_date ? new Date(l.origination_date).toLocaleDateString('en-IN') : '—'}
+                        </span>
+                      </div>
+                      <ArrowRight size={16} className="text-gray-400 group-hover:text-blue-600 group-hover:translate-x-1 transition" />
+                    </button>
+                  ))}
+                </div>
+                <div className="pt-2 border-t border-gray-100 flex justify-end">
+                  <button
+                    onClick={() => setIsCandidateModalOpen(false)}
+                    className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Customer Dossier & Collateral Overview */}
           {activeLoan && !success && (
@@ -1044,100 +1257,189 @@ function BillingContent() {
 
           {/* Success Screen after posting */}
           {success && lastCreatedPayment && activeLoan && (
-            <div className="bg-white border border-gray-200 rounded-xl p-8 text-center space-y-5 shadow-sm max-w-lg mx-auto">
-              <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-inner">
-                <CheckCircle2 size={36} />
-              </div>
+            <div className="bg-white border border-gray-200 rounded-2xl p-6 sm:p-8 space-y-6 shadow-sm max-w-xl mx-auto">
+              <div className="text-center space-y-3">
+                <div className="w-16 h-16 bg-emerald-100 text-emerald-600 rounded-full flex items-center justify-center mx-auto shadow-inner">
+                  <CheckCircle2 size={36} />
+                </div>
 
-              <div className="space-y-1">
-                <h2 className="text-xl font-bold text-gray-900 font-outfit">
-                  Repayment Posted Successfully!
-                </h2>
-                <p className="text-xs text-gray-500">
-                  Official Receipt No: <span className="font-mono font-bold text-gray-800">{lastCreatedPayment.receipt_number}</span>
-                </p>
-              </div>
-
-              <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 text-xs space-y-2 text-left">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Total Received:</span>
-                  <span className="font-bold text-gray-900">₹{numReceived.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Interest Cleared:</span>
-                  <span className="font-bold text-emerald-700">₹{interestCleared.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Principal Paid:</span>
-                  <span className="font-bold text-blue-700">₹{principalReduction.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between border-t border-gray-200 pt-2 font-bold">
-                  <span className="text-gray-900">Remaining Principal:</span>
-                  <span className="text-gray-900">₹{newPrincipalBalance.toLocaleString('en-IN')}</span>
+                <div className="space-y-1">
+                  <span className="px-3 py-1 rounded-full text-[11px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 uppercase tracking-wider">
+                    Payment Confirmed &amp; Saved
+                  </span>
+                  <h2 className="text-xl sm:text-2xl font-bold text-gray-900 font-outfit mt-2">
+                    Repayment Successfully Posted!
+                  </h2>
+                  <p className="text-xs text-gray-500 font-mono">
+                    Official Receipt No: <span className="font-bold text-blue-700">{lastCreatedPayment.receipt_number}</span>
+                  </p>
                 </div>
               </div>
 
-              {/* Receipt Buttons */}
-              <div className="flex flex-wrap items-center justify-center gap-3 pt-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewUrl(
-                      getPdfApiUrl({
+              {/* Rotating Tamil Slogan Stamped */}
+              {(lastCreatedPayment.slogan_text || previewSlogan?.sloganText) && (
+                <div className="p-3.5 bg-amber-50/80 border border-amber-200 rounded-xl text-center space-y-0.5">
+                  <span className="text-[10px] font-bold text-amber-800 uppercase tracking-wider block">
+                    Assigned Tamil Bill Slogan ({lastCreatedPayment.slogan_id || previewSlogan?.sloganId || 'SLOGAN'})
+                  </span>
+                  <p className="text-xs font-semibold text-amber-950 font-outfit">
+                    &ldquo;{lastCreatedPayment.slogan_text || previewSlogan?.sloganText}&rdquo;
+                  </p>
+                </div>
+              )}
+
+              {/* Financial Ledger Breakdown */}
+              <div className="p-4 bg-gray-50 rounded-xl border border-gray-200 text-xs space-y-2.5">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Customer Name:</span>
+                  <span className="font-bold text-gray-900">{activeCustomer?.name || 'Customer'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Loan / Pawn Ticket:</span>
+                  <span className="font-mono font-bold text-blue-700">{activeLoan.loan_number}</span>
+                </div>
+                <div className="flex justify-between border-t border-gray-200/80 pt-2">
+                  <span className="text-gray-600">Total Received:</span>
+                  <span className="font-bold text-gray-900 text-sm">₹{numReceived.toLocaleString('en-IN')}</span>
+                </div>
+                {penaltyCleared > 0 && (
+                  <div className="flex justify-between text-amber-800">
+                    <span>Penalty Cleared:</span>
+                    <span className="font-mono font-semibold">₹{penaltyCleared.toLocaleString('en-IN')}</span>
+                  </div>
+                )}
+                <div className="flex justify-between text-emerald-800">
+                  <span>Interest Cleared:</span>
+                  <span className="font-mono font-semibold">₹{interestCleared.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between text-blue-800">
+                  <span>Principal Reduction:</span>
+                  <span className="font-mono font-bold">₹{principalReduction.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between border-t border-gray-200/80 pt-2 font-bold text-gray-900">
+                  <span>Remaining Principal Balance:</span>
+                  <span className="text-blue-700 font-mono text-sm">₹{newPrincipalBalance.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="flex justify-between text-gray-500 text-[11px]">
+                  <span>Next Due / Maturity Date:</span>
+                  <span className="font-mono text-gray-800">
+                    {activeLoan.maturity_date ? new Date(activeLoan.maturity_date).toLocaleDateString('en-IN') : 'N/A'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Dual Receipt Note */}
+              <div className="p-3 bg-blue-50/60 border border-blue-200/70 rounded-xl text-[11px] text-blue-900 text-left flex items-start gap-2">
+                <Sparkles size={14} className="text-blue-600 shrink-0 mt-0.5" />
+                <span>
+                  <strong>Dual Receipts Ready:</strong> Customer Copy &amp; Office Copy are automatically generated. Compatible with A4 PDF export and 80mm thermal POS receipt printers.
+                </span>
+              </div>
+
+              {/* Post-Payment Action Buttons */}
+              <div className="space-y-2.5 pt-1">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPreviewUrl(
+                        getPdfApiUrl({
+                          type: 'receipt',
+                          loanId: activeLoan.id,
+                          paymentId: lastCreatedPayment.id,
+                          copy: 'both',
+                        })
+                      );
+                      setPreviewTitle(`Official Payment Receipt (Customer & Office) - ${lastCreatedPayment.receipt_number}`);
+                      setIsPreviewOpen(true);
+                    }}
+                    className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <FileText size={14} />
+                    <span>📄 Preview Receipt</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadPdfDocument(
+                        {
+                          type: 'receipt',
+                          loanId: activeLoan.id,
+                          paymentId: lastCreatedPayment.id,
+                          copy: 'both',
+                        },
+                        `PGF_Receipt_${lastCreatedPayment.receipt_number}.pdf`
+                      );
+                    }}
+                    className="w-full py-2.5 px-3 bg-gray-900 hover:bg-black text-white rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer"
+                  >
+                    <Download size={14} />
+                    <span>⬇ Download PDF</span>
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      printPdfDocument({
                         type: 'receipt',
                         loanId: activeLoan.id,
                         paymentId: lastCreatedPayment.id,
-                      })
-                    );
-                    setPreviewTitle(`A4 Payment Receipt - ${lastCreatedPayment.receipt_number}`);
-                    setIsPreviewOpen(true);
-                  }}
-                  className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-                >
-                  <Printer size={14} />
-                  <span>Print A4 Receipt</span>
-                </button>
+                        copy: 'customer',
+                      });
+                    }}
+                    className="py-2 px-2.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Printer size={13} />
+                    <span>🖨 Print Customer Copy</span>
+                  </button>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    setPreviewUrl(
-                      getPdfApiUrl({
+                  <button
+                    type="button"
+                    onClick={() => {
+                      printPdfDocument({
+                        type: 'receipt',
+                        loanId: activeLoan.id,
+                        paymentId: lastCreatedPayment.id,
+                        copy: 'office',
+                      });
+                    }}
+                    className="py-2 px-2.5 bg-slate-50 hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Printer size={13} />
+                    <span>🖨 Print Office Copy</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      printPdfDocument({
                         type: 'receipt',
                         loanId: activeLoan.id,
                         paymentId: lastCreatedPayment.id,
                         format: 'thermal',
-                      })
-                    );
-                    setPreviewTitle(`80mm Thermal Receipt - ${lastCreatedPayment.receipt_number}`);
-                    setIsPreviewOpen(true);
-                  }}
-                  className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
-                >
-                  <Printer size={14} />
-                  <span>Print 80mm Thermal</span>
-                </button>
+                      });
+                    }}
+                    className="py-2 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 rounded-lg text-[11px] font-bold transition flex items-center justify-center gap-1 cursor-pointer"
+                  >
+                    <Printer size={13} />
+                    <span>🖨 Print 80mm Thermal</span>
+                  </button>
+                </div>
 
                 <button
                   type="button"
-                  onClick={() => {
-                    downloadPdfDocument(
-                      {
-                        type: 'receipt',
-                        loanId: activeLoan.id,
-                        paymentId: lastCreatedPayment.id,
-                      },
-                      `PGF_Receipt_${lastCreatedPayment.receipt_number}.pdf`
-                    );
-                  }}
-                  className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-bold transition flex items-center gap-1.5 border border-gray-200"
+                  onClick={handleWhatsAppShare}
+                  className="w-full py-2.5 px-3 bg-green-50 hover:bg-green-100 text-green-800 border border-green-300 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer"
                 >
-                  <Download size={14} />
-                  <span>Download PDF</span>
+                  <Share2 size={14} />
+                  <span>📱 Share / Send (WhatsApp)</span>
                 </button>
               </div>
 
-              <div className="pt-3 border-t border-gray-100 flex justify-center gap-4">
+              <div className="pt-3 border-t border-gray-100 flex flex-col sm:flex-row justify-between items-center gap-3 text-xs">
                 <button
                   type="button"
                   onClick={() => {
@@ -1145,16 +1447,21 @@ function BillingContent() {
                     setAmountReceived('');
                     setRemarks('');
                     setReferenceNumber('');
+                    setLastCreatedPayment(null);
+                    setPreviewSlogan(null);
+                    setPreviewReceiptNo('');
                   }}
-                  className="text-xs font-semibold text-blue-600 hover:underline"
+                  className="font-bold text-blue-600 hover:text-blue-800 transition flex items-center gap-1 cursor-pointer"
                 >
-                  Record Another Payment
+                  <ArrowRight size={13} className="rotate-180" />
+                  <span>↩ Back to Billing</span>
                 </button>
                 <Link
                   href={`/admin/loans/${activeLoan.id}`}
-                  className="text-xs font-semibold text-gray-600 hover:text-gray-900"
+                  className="font-semibold text-gray-600 hover:text-gray-900 transition flex items-center gap-1"
                 >
-                  View Loan Details &rarr;
+                  <span>View Loan Dossier</span>
+                  <ArrowRight size={13} />
                 </Link>
               </div>
             </div>
@@ -1352,115 +1659,194 @@ function BillingContent() {
         </div>
       )}
 
-      {/* PAYMENT CONFIRMATION MODAL */}
+      {/* BILLING PREVIEW & PAYMENT CONFIRMATION MODAL (Step 2 & 3) */}
       {isConfirmModalOpen && activeLoan && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl border border-gray-200 animate-in fade-in zoom-in-95 duration-150">
+          <div className="bg-white rounded-2xl max-w-xl w-full p-6 space-y-4 shadow-2xl border border-gray-200 animate-in fade-in zoom-in-95 duration-150 max-h-[92vh] overflow-y-auto">
+            {/* Modal Header */}
             <div className="flex items-center justify-between border-b border-gray-100 pb-3">
-              <div className="flex items-center gap-2">
-                <span className="p-1.5 bg-blue-50 text-blue-600 rounded-lg">
-                  <Receipt size={18} />
+              <div className="flex items-center gap-2.5">
+                <span className="p-2 bg-blue-50 text-blue-600 rounded-xl">
+                  <Receipt size={20} />
                 </span>
-                <h3 className="font-bold text-gray-900 text-sm">Confirm Payment Posting</h3>
+                <div>
+                  <h3 className="font-bold text-gray-900 text-sm font-outfit">Billing &amp; Payment Preview</h3>
+                  <p className="text-[11px] text-gray-500">
+                    Step 2 &middot; Verify transaction values before committing to the ledger
+                  </p>
+                </div>
               </div>
               <button
                 onClick={() => setIsConfirmModalOpen(false)}
-                className="text-gray-400 hover:text-gray-600"
+                className="text-gray-400 hover:text-gray-600 text-xl font-bold p-1 cursor-pointer"
               >
                 &times;
               </button>
             </div>
 
-            <div className="space-y-3 text-xs">
-              <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Loan Account:</span>
-                  <span className="font-bold text-gray-900">{activeLoan.loan_number}</span>
+            {/* Borrower & Loan Identity Dossier */}
+            <div className="p-3.5 bg-gray-50 rounded-xl border border-gray-200 grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div>
+                <span className="text-gray-500 block text-[10px] uppercase font-medium">Customer Name &amp; Mobile</span>
+                <span className="font-bold text-gray-900 block">{activeCustomer?.name || 'Customer'}</span>
+                <span className="text-[11px] text-blue-600 font-mono">+91 {activeCustomer?.phone_primary || '—'}</span>
+              </div>
+              <div>
+                <span className="text-gray-500 block text-[10px] uppercase font-medium">Customer ID</span>
+                <span className="font-mono text-gray-900 font-semibold">{activeCustomer?.customer_number || activeCustomer?.id || '—'}</span>
+              </div>
+              <div className="sm:col-span-2 pt-1.5 border-t border-gray-200/80 flex flex-wrap justify-between gap-2">
+                <div>
+                  <span className="text-gray-500 text-[10px] block">Loan / Pawn Ticket No.</span>
+                  <span className="font-bold font-mono text-blue-700">
+                    {activeLoan.loan_number} {activeLoan.pawn_ticket_number && activeLoan.pawn_ticket_number !== activeLoan.loan_number ? `(Ticket: ${activeLoan.pawn_ticket_number})` : ''}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Borrower:</span>
-                  <span className="font-semibold text-gray-900">{activeCustomer?.name || 'Customer'}</span>
+                <div>
+                  <span className="text-gray-500 text-[10px] block">Payment Date &amp; Time</span>
+                  <span className="font-mono text-gray-800">
+                    {paymentDate} at {new Date().toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Payment Date:</span>
-                  <span className="font-mono text-gray-900">{paymentDate}</span>
+              </div>
+            </div>
+
+            {/* Pre-Payment Balances & Amount Entered */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="p-2.5 bg-gray-50 rounded-lg border border-gray-200">
+                <span className="text-gray-500 text-[10px] block">Principal Outstanding</span>
+                <span className="font-bold text-gray-900 font-mono">₹{currentPrincipal.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="p-2.5 bg-amber-50 rounded-lg border border-amber-200">
+                <span className="text-amber-700 text-[10px] block font-bold">Accrued Interest</span>
+                <span className="font-bold text-amber-900 font-mono">₹{currentInterest.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="p-2.5 bg-rose-50 rounded-lg border border-rose-200">
+                <span className="text-rose-700 text-[10px] block font-bold">Penalty / Fee</span>
+                <span className="font-bold text-rose-900 font-mono">₹{numPenalty.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="p-2.5 bg-blue-50 rounded-lg border border-blue-200">
+                <span className="text-blue-700 text-[10px] block font-bold">Payment Amount</span>
+                <span className="font-extrabold text-blue-950 font-mono text-sm">₹{numReceived.toLocaleString('en-IN')}</span>
+              </div>
+            </div>
+
+            {/* Payment Mode & Reference */}
+            <div className="flex justify-between items-center px-3 py-2 bg-gray-50 rounded-lg border border-gray-200 text-xs">
+              <span className="text-gray-600 font-medium">Payment Mode:</span>
+              <span className="font-bold text-gray-900">{paymentMode} {referenceNumber ? `(Ref: ${referenceNumber})` : ''}</span>
+            </div>
+
+            {/* Waterfall Allocation (Penalty → Interest → Principal) */}
+            <div className="bg-gradient-to-br from-blue-50/70 to-indigo-50/70 border border-blue-200 rounded-xl p-3.5 space-y-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-bold text-blue-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                  <Coins size={14} className="text-blue-600" />
+                  Allocation Waterfall: Penalty &rarr; Interest &rarr; Principal
+                </span>
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-800 border border-blue-200">
+                  Statutory Order
+                </span>
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                <div className="bg-white p-2.5 rounded-lg border border-blue-100 shadow-2xs">
+                  <span className="text-[10px] text-gray-500 block">Step 1: Penalty</span>
+                  <span className="font-bold text-amber-800 block mt-0.5 font-mono">₹{penaltyCleared.toLocaleString('en-IN')}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-500">Payment Mode:</span>
-                  <span className="text-gray-900 font-semibold">{paymentMode} {referenceNumber ? `(Ref: ${referenceNumber})` : ''}</span>
+                <div className="bg-white p-2.5 rounded-lg border border-blue-100 shadow-2xs">
+                  <span className="text-[10px] text-gray-500 block">Step 2: Interest</span>
+                  <span className="font-bold text-emerald-700 block mt-0.5 font-mono">₹{interestCleared.toLocaleString('en-IN')}</span>
+                </div>
+                <div className="bg-white p-2.5 rounded-lg border border-blue-100 shadow-2xs">
+                  <span className="text-[10px] text-gray-500 block">Step 3: Principal</span>
+                  <span className="font-bold text-blue-700 block mt-0.5 font-mono">₹{principalReduction.toLocaleString('en-IN')}</span>
                 </div>
               </div>
 
-              <div className="p-3 bg-blue-50/60 rounded-xl border border-blue-200 space-y-2">
-                <div className="flex justify-between text-gray-700">
-                  <span>Previous Principal Balance:</span>
-                  <span className="font-bold text-gray-900 font-mono">₹{currentPrincipal.toLocaleString('en-IN')}</span>
+              {numWaiver > 0 && (
+                <div className="flex justify-between text-purple-900 bg-purple-50/80 px-2.5 py-1.5 rounded-lg border border-purple-200 text-[11px]">
+                  <span>Approved Discount Waiver:</span>
+                  <span className="font-bold font-mono">₹{numWaiver.toLocaleString('en-IN')}</span>
                 </div>
-                <div className="flex justify-between font-bold text-blue-900 border-t border-blue-100 pt-1.5">
-                  <span>Total Received:</span>
-                  <span className="font-mono">₹{numReceived.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between text-emerald-800">
-                  <span>Interest Cleared:</span>
-                  <span className="font-mono font-semibold">₹{interestCleared.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between text-blue-800">
-                  <span>Principal Reduction:</span>
-                  <span className="font-mono font-bold">₹{principalReduction.toLocaleString('en-IN')}</span>
-                </div>
-                {penaltyCleared > 0 && (
-                  <div className="flex justify-between text-amber-800">
-                    <span>Penalty Paid:</span>
-                    <span className="font-mono">₹{penaltyCleared.toLocaleString('en-IN')}</span>
-                  </div>
-                )}
-                {numWaiver > 0 && (
-                  <div className="flex justify-between text-purple-800">
-                    <span>Approved Waiver:</span>
-                    <span className="font-mono">₹{numWaiver.toLocaleString('en-IN')}</span>
-                  </div>
-                )}
-                <div className="flex justify-between border-t border-blue-200 pt-2 font-bold text-gray-900">
-                  <span>New Principal Balance:</span>
-                  <span className="font-mono text-blue-900 text-sm">₹{newPrincipalBalance.toLocaleString('en-IN')}</span>
-                </div>
-                <div className="flex justify-between text-gray-600 text-[11px]">
-                  <span>Remaining Outstanding Interest:</span>
-                  <span className="font-mono font-semibold">₹{remainingInterest.toLocaleString('en-IN')}</span>
-                </div>
-              </div>
+              )}
+            </div>
 
-              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 flex items-start gap-2">
-                <AlertCircle size={15} className="shrink-0 text-amber-600 mt-0.5" />
-                <span>
-                  <strong>Important:</strong> Please verify the payment allocation before confirming. Once posted, financial corrections require authorized reversal.
+            {/* Post-Payment Balances & Next Due Date */}
+            <div className="p-3 bg-gray-50 rounded-xl border border-gray-200 space-y-1.5 text-xs">
+              <div className="flex justify-between font-bold text-gray-900">
+                <span>Remaining Principal Balance:</span>
+                <span className="font-mono text-blue-700">₹{newPrincipalBalance.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between text-gray-600">
+                <span>Remaining Accrued Interest:</span>
+                <span className="font-mono font-semibold">₹{remainingInterest.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between font-extrabold text-gray-900 border-t border-gray-200 pt-1.5">
+                <span>Total Outstanding After Payment:</span>
+                <span className="font-mono text-blue-900">₹{totalRemainingOutstanding.toLocaleString('en-IN')}</span>
+              </div>
+              <div className="flex justify-between text-gray-500 text-[11px] pt-0.5">
+                <span>Next Due / Maturity Date:</span>
+                <span className="font-mono text-gray-800">
+                  {activeLoan.maturity_date ? new Date(activeLoan.maturity_date).toLocaleDateString('en-IN') : 'N/A'}
                 </span>
               </div>
             </div>
 
-            <div className="flex justify-end gap-3 pt-2">
+            {/* Preview Metadata: Receipt No & Tamil Slogan */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs">
+              <div className="p-2.5 bg-blue-50/50 rounded-lg border border-blue-200">
+                <span className="text-[10px] text-blue-700 uppercase block font-semibold">Receipt Number Preview</span>
+                <span className="font-mono font-bold text-blue-950 text-xs block mt-0.5">
+                  {previewReceiptNo || 'PGF-REC-XXXXXX'}
+                </span>
+                <span className="text-[9px] text-gray-400 block">Auto-assigned on confirmation</span>
+              </div>
+
+              <div className="p-2.5 bg-amber-50/60 rounded-lg border border-amber-200">
+                <span className="text-[10px] text-amber-800 uppercase block font-semibold">
+                  Tamil Slogan Preview ({previewSlogan?.sloganId || 'ROTATING'})
+                </span>
+                <span className="font-medium text-amber-950 text-xs block mt-0.5 italic">
+                  &ldquo;{previewSlogan?.sloganText || 'உங்கள் தங்கம்… எங்கள் நம்பிக்கை!'}&rdquo;
+                </span>
+              </div>
+            </div>
+
+            {/* Important Notice */}
+            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] flex items-start gap-2">
+              <AlertCircle size={14} className="shrink-0 text-amber-600 mt-0.5" />
+              <span>
+                <strong>Audit Notice:</strong> Confirming writes an atomic ledger transaction to Firestore, updates loan balances, assigns the sequential receipt, and generates dual customer &amp; office copies.
+              </span>
+            </div>
+
+            {/* Modal Action Buttons: Edit (back to billing) vs Confirm & Save */}
+            <div className="flex justify-end gap-3 pt-2 border-t border-gray-100">
               <button
                 type="button"
                 onClick={() => setIsConfirmModalOpen(false)}
-                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold transition"
+                className="px-4 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
               >
-                Cancel
+                <Edit3 size={14} />
+                <span>Edit / Return to Billing</span>
               </button>
               <button
                 type="button"
                 disabled={loading}
                 onClick={handleConfirmAndPostPayment}
-                className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm"
+                className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 shadow-sm cursor-pointer"
               >
                 {loading ? (
                   <>
                     <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    <span>Posting...</span>
+                    <span>Saving Payment...</span>
                   </>
                 ) : (
                   <>
                     <Check size={14} />
-                    <span>Confirm & Post</span>
+                    <span>Confirm &amp; Save Payment</span>
                   </>
                 )}
               </button>

@@ -122,6 +122,21 @@ export async function generateReceiptNumber(): Promise<string> {
 }
 
 /**
+ * Peek at the upcoming receipt number for pre-commit billing preview without incrementing the counter.
+ */
+export async function peekNextReceiptNumber(): Promise<string> {
+  try {
+    const counterRef = doc(db, 'counters', 'receipt_number');
+    const snap = await getDoc(counterRef);
+    const current = snap.exists() ? (snap.data().value || 0) : 0;
+    const nextVal = current + 1;
+    return `PGF-REC-${String(nextVal).padStart(6, '0')}`;
+  } catch {
+    return 'PGF-REC-PREVIEW';
+  }
+}
+
+/**
  * Generate a unique loan release / closure voucher number using a Firestore transaction (atomic).
  */
 export async function generateReleaseNumber(): Promise<string> {

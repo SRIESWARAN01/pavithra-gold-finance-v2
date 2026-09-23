@@ -342,6 +342,8 @@ function NewLoanWizardContent() {
   const [interestApr, setInterestApr] = useState<number | ''>(''); // Blank by default, user enters APR
   const [durationDays, setDurationDays] = useState(365); // 1 Year default
   const [agreeTerms, setAgreeTerms] = useState(true); // Terms agreement checkbox
+  const [disbursalMode, setDisbursalMode] = useState<string>('Cash');
+  const [showDisbursementPreview, setShowDisbursementPreview] = useState<boolean>(false);
 
   // Update principal amount when totals modify only if user has not entered a custom amount
   useEffect(() => {
@@ -352,6 +354,50 @@ function NewLoanWizardContent() {
 
   // Submit and create loan
   const [loading, setLoading] = useState(false);
+
+  // Step 3 Pre-Commit: Open Disbursement Preview
+  const handleOpenDisbursementPreview = () => {
+    setError(null);
+    if (!selectedCustomerId) {
+      setError('Please select a customer before originating the loan.');
+      setStep(1);
+      return;
+    }
+    for (let i = 0; i < goldItems.length; i++) {
+      const item = goldItems[i];
+      if (!item.name || !item.name.trim()) {
+        setError(`Please enter an ornament name / description for item ${i + 1}.`);
+        return;
+      }
+      if (item.grossWeight === '' || typeof item.grossWeight !== 'number' || item.grossWeight <= 0) {
+        setError(`Please enter a valid gross weight greater than zero for item ${i + 1} (${item.name}).`);
+        return;
+      }
+      const sWeight = typeof item.stoneWeight === 'number' ? item.stoneWeight : 0;
+      if (item.grossWeight <= sWeight) {
+        setError(`Item ${i + 1} (${item.name}) net weight must be greater than zero. Stone deductions cannot exceed gross weight.`);
+        return;
+      }
+      if (item.ratePerGram === '' || typeof item.ratePerGram !== 'number' || item.ratePerGram <= 0) {
+        setError(`Please enter a valid rate per gram greater than zero for item ${i + 1} (${item.name}).`);
+        return;
+      }
+    }
+    if (loanPrincipal === '' || typeof loanPrincipal !== 'number' || loanPrincipal <= 0) {
+      setError('Requested principal amount must be entered and greater than zero.');
+      return;
+    }
+    if (interestApr === '' || typeof interestApr !== 'number' || !VALID_LOAN_APR_RATES.includes(interestApr as any)) {
+      setError('Please select an Annual Interest Rate (APR %) from the 5 available options: 18%, 20%, 22%, 24%, or 30%.');
+      return;
+    }
+    if (!agreeTerms) {
+      setError('Please accept the statutory pledge terms and conditions to proceed.');
+      return;
+    }
+
+    setShowDisbursementPreview(true);
+  };
 
   const handleSubmitLoan = async () => {
     setLoading(true);
@@ -504,6 +550,7 @@ function NewLoanWizardContent() {
 
       setCreatedLoanId(loan.id);
       setCreatedLoanNumber(loan.loan_number);
+      setShowDisbursementPreview(false);
       setStep(4); // Advance to confirmation step
     } catch (err: any) {
       console.error('Failed to originate loan:', err);
@@ -1146,8 +1193,9 @@ function NewLoanWizardContent() {
             <div className="space-y-1.5">
               <label className="text-xs text-gray-700 font-bold block">Disbursal Mode</label>
               <select
-                className="w-full bg-[#F9FAFB] border border-[#E5E7EB] focus:border-[#2563EB] text-gray-900 text-xs rounded-lg px-3 py-2.5 outline-none font-semibold"
-                defaultValue="Cash"
+                value={disbursalMode}
+                onChange={(e) => setDisbursalMode(e.target.value)}
+                className="w-full bg-[#F9FAFB] border border-[#E5E7EB] focus:border-[#2563EB] text-gray-900 text-xs rounded-lg px-3 py-2.5 outline-none font-semibold cursor-pointer"
               >
                 <option value="Cash">Cash at Counter</option>
                 <option value="UPI">Direct UPI Transfer</option>
@@ -1174,25 +1222,17 @@ function NewLoanWizardContent() {
           <div className="flex justify-between pt-6 border-t border-[#E5E7EB]">
             <button
               onClick={() => setStep(2)}
-              className="px-6 py-2.5 border border-[#E5E7EB] hover:bg-[#F3F4F6] text-gray-700 text-xs font-semibold rounded-xl transition"
+              className="px-6 py-2.5 border border-[#E5E7EB] hover:bg-[#F3F4F6] text-gray-700 text-xs font-semibold rounded-xl transition cursor-pointer"
             >
               Back
             </button>
             <button
-              onClick={handleSubmitLoan}
+              onClick={handleOpenDisbursementPreview}
               disabled={loading || typeof loanPrincipal !== 'number' || loanPrincipal <= 0 || !agreeTerms}
-              className={`px-8 py-2.5 ${typeof loanPrincipal === 'number' && loanPrincipal > totalMaxEligibility ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20' : 'bg-[#2563EB] hover:bg-[#1D4ED8] shadow-blue-600/20'} disabled:bg-gray-300 disabled:text-gray-500 text-white text-xs font-bold rounded-xl transition flex items-center gap-2 shadow-lg`}
+              className={`px-8 py-2.5 ${typeof loanPrincipal === 'number' && loanPrincipal > totalMaxEligibility ? 'bg-amber-600 hover:bg-amber-700 shadow-amber-600/20' : 'bg-[#2563EB] hover:bg-[#1D4ED8] shadow-blue-600/20'} disabled:bg-gray-300 disabled:text-gray-500 text-white text-xs font-bold rounded-xl transition flex items-center gap-2 shadow-lg cursor-pointer`}
             >
-              {loading ? (
-                <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-              ) : (
-                <Coins size={15} />
-              )}
-              {typeof loanPrincipal === 'number' && loanPrincipal > totalMaxEligibility
-                ? 'Submit for Admin Approval (High LTV)'
-                : (currentUserProfile?.role === 'Employee' || currentUserProfile?.role === 'Appraiser'
-                    ? 'Submit Application for Approval'
-                    : 'Disburse & Originate Loan')}
+              <Coins size={15} />
+              Disbursement Preview &rarr;
             </button>
           </div>
         </div>
@@ -1336,6 +1376,171 @@ function NewLoanWizardContent() {
             >
               + Originate Another Loan
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* STEP 3 PRE-COMMIT: DISBURSEMENT PREVIEW MODAL */}
+      {showDisbursementPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white rounded-2xl shadow-2xl border border-gray-200 w-full max-w-2xl overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 bg-gradient-to-r from-blue-700 to-indigo-800 text-white flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-white/15 flex items-center justify-center border border-white/20">
+                  <Coins className="w-5 h-5 text-amber-300" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold font-outfit">Loan Disbursement Preview</h3>
+                  <p className="text-xs text-blue-100">Customer &rarr; Appraisal &rarr; Terms &rarr; Pre-Disbursement Verification</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowDisbursementPreview(false)}
+                className="p-1.5 rounded-lg text-white/80 hover:text-white hover:bg-white/10 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4 overflow-y-auto flex-1 text-xs">
+              {/* Borrower info */}
+              <div className="bg-gray-50 border border-gray-200 rounded-xl p-4 flex justify-between items-center">
+                <div>
+                  <span className="text-gray-400 block text-[10px] uppercase tracking-wider">Borrower Details</span>
+                  <strong className="text-gray-900 text-sm block">{selectedCustomer?.name}</strong>
+                  <span className="text-blue-700 font-mono text-xs">
+                    ID: {selectedCustomer?.customer_number || selectedCustomer?.id?.substring(0, 8)} &middot; {selectedCustomer?.phone_primary || 'N/A'}
+                  </span>
+                </div>
+                <span className="px-2.5 py-1 bg-blue-50 text-blue-700 border border-blue-200 rounded-full font-bold text-[10px]">
+                  KYC Verified
+                </span>
+              </div>
+
+              {/* Collateral Summary */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-blue-50/50 border border-blue-100 rounded-xl p-3.5 text-center">
+                <div>
+                  <span className="text-gray-500 block text-[10px]">Total Ornaments</span>
+                  <strong className="text-gray-900 text-sm">{goldItems.length} Items</strong>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-[10px]">Total Net Weight</span>
+                  <strong className="text-amber-800 text-sm">{totalCollateralWeight.toFixed(2)} g</strong>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-[10px]">Market Valuation</span>
+                  <strong className="text-gray-900 text-sm">₹ {totalMarketValue.toLocaleString('en-IN')}</strong>
+                </div>
+                <div>
+                  <span className="text-gray-500 block text-[10px]">Max LTV Cap ({maxLtvPct}%)</span>
+                  <strong className="text-blue-700 text-sm">₹ {totalMaxEligibility.toLocaleString('en-IN')}</strong>
+                </div>
+              </div>
+
+              {/* Ornament List table */}
+              <div className="border border-gray-200 rounded-xl overflow-hidden">
+                <div className="bg-gray-100/70 px-3.5 py-2 font-bold text-gray-700 text-[11px] uppercase tracking-wider">
+                  Collateral Inventory ({goldItems.length})
+                </div>
+                <div className="divide-y divide-gray-100 max-h-36 overflow-y-auto">
+                  {goldItems.map((item, idx) => (
+                    <div key={idx} className="p-2.5 flex justify-between items-center text-[11px]">
+                      <div>
+                        <span className="font-bold text-gray-900">{idx + 1}. {item.name}</span>
+                        <span className="text-gray-500 ml-2">({item.purity} &middot; Net: {typeof item.netWeight === 'number' ? item.netWeight.toFixed(2) : '0'}g)</span>
+                      </div>
+                      <div className="text-right">
+                        <span className="font-bold text-gray-800">₹ {item.marketValue.toLocaleString('en-IN')}</span>
+                        <span className="text-gray-400 block text-[9px]">Max LTV: ₹{item.maxEligibleLoan.toLocaleString('en-IN')}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Loan Disbursal Parameters */}
+              <div className="bg-emerald-50/50 border border-emerald-200 rounded-xl p-4 space-y-2.5">
+                <span className="font-bold text-emerald-950 block text-[11px] uppercase tracking-wider">
+                  Disbursement &amp; Terms Summary
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 bg-white p-3 rounded-lg border border-emerald-100">
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Disbursal Principal</span>
+                    <strong className="text-emerald-700 text-base font-outfit">₹ {Number(loanPrincipal).toLocaleString('en-IN')}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Interest APR</span>
+                    <strong className="text-gray-900 text-sm">{interestApr}% p.a. ({(Number(interestApr) / 12).toFixed(2)}%/mo)</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Monthly Interest</span>
+                    <strong className="text-amber-800 text-sm">₹ {Math.round((Number(loanPrincipal) * (Number(interestApr) / 100)) / 12).toLocaleString('en-IN')} / mo</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Tenure / Days</span>
+                    <strong className="text-gray-900 text-sm">{durationDays} Days ({Math.round(durationDays / 30)} Months)</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Disbursal Mode</span>
+                    <strong className="text-blue-800 text-sm">{disbursalMode}</strong>
+                  </div>
+                  <div>
+                    <span className="text-gray-500 text-[10px] block">Maturity Date</span>
+                    <strong className="text-gray-900 text-sm">
+                      {new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000).toLocaleDateString('en-IN')}
+                    </strong>
+                  </div>
+                </div>
+              </div>
+
+              {/* Warning if High LTV or Employee Approval needed */}
+              {(typeof loanPrincipal === 'number' && loanPrincipal > totalMaxEligibility) ? (
+                <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 flex items-center gap-2 text-xs">
+                  <AlertTriangle className="w-4 h-4 shrink-0 text-amber-600" />
+                  <span>This principal amount exceeds standard {maxLtvPct}% LTV cap and will be submitted for Manager/Admin review.</span>
+                </div>
+              ) : (currentUserProfile?.role === 'Employee' || currentUserProfile?.role === 'Appraiser') ? (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-blue-800 flex items-center gap-2 text-xs">
+                  <ShieldCheck className="w-4 h-4 shrink-0 text-blue-600" />
+                  <span>Staff submission requires management verification prior to physical cash release.</span>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="p-4 bg-gray-50 border-t border-gray-200 flex items-center justify-between gap-3">
+              <button
+                type="button"
+                onClick={() => setShowDisbursementPreview(false)}
+                className="px-4 py-2.5 rounded-xl border border-gray-300 text-gray-700 hover:bg-white text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                Edit Parameters
+              </button>
+
+              <button
+                type="button"
+                disabled={loading}
+                onClick={handleSubmitLoan}
+                className="px-6 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-blue-600/20 cursor-pointer"
+              >
+                {loading ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    Origination in Progress...
+                  </>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    {typeof loanPrincipal === 'number' && loanPrincipal > totalMaxEligibility
+                      ? 'Confirm & Submit for Admin Approval'
+                      : (currentUserProfile?.role === 'Employee' || currentUserProfile?.role === 'Appraiser'
+                          ? 'Confirm & Submit for Approval'
+                          : 'Confirm & Disburse Gold Loan')}
+                  </>
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}
