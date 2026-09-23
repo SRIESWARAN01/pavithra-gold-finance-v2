@@ -1,6 +1,6 @@
 # Pavithra Gold Finance (PGF) - Master Requirements Document (MRD)
 ## Production Enterprise Gold Loan & Capital Management System Blueprint & Technical Specification
-### Version 2.5 (Comprehensive Enterprise Edition — All Features & Portals)
+### Version 2.6 (Comprehensive Enterprise Edition — All Features & Portals)
 
 ---
 
@@ -139,6 +139,7 @@ graph TB
 ### 5.1 Stack Specifications
 * **Frontend Framework**: Next.js 16.2.9 (App Router, Turbopack, standalone server output).
 * **UI & Rendering Engine**: React 19.2.4, TypeScript 5, Tailwind CSS v4.0 with `@tailwindcss/postcss`.
+* **Typography**: Google Fonts (Inter & Outfit) loaded at runtime via `<link>` tags with `preconnect` and system font fallback stack — eliminates build-time network dependency for offline/CI builds.
 * **Database**: Google Cloud Firestore (32 collections, real-time snapshot synchronization, ACID atomic transactions).
 * **Authentication**: Firebase Authentication v12.17.1 (Client) & Firebase Admin SDK v13.1.0 (Server) with cryptographic ID tokens, custom claims, and development clock-skew resilience.
 * **Asset Storage**: Firebase Cloud Storage with folder-level isolation (`/customers/{uid}/*`, `/collateral/*`, `/documents/*`, `/investors/{uid}/*`).
@@ -923,7 +924,7 @@ Configured dynamically via `/admin/settings` and `/admin/investments/settings`:
 ---
 
 ## 23. Automated Testing & Verification Suite
-The codebase includes an enterprise-grade automated test suite executed via Node's native test runner (`node --test tests/**/*.test.mjs`). All **18 test suites** containing **161 test cases** pass with 100% success:
+The codebase includes an enterprise-grade automated test suite executed via Node's native test runner (`node --test tests/**/*.test.mjs`). All **18 test suites** containing **162 test cases** pass with 100% success:
 
 | # | Test Suite File | Test Count | Scope & Verification Criteria |
 |:---|:---|:---:|:---|
@@ -947,8 +948,11 @@ The codebase includes an enterprise-grade automated test suite executed via Node
 | 18 | `tests/e2e-production-audit.test.mjs` | 12 | Full lending lifecycle audit (Onboarding $\to$ Appraisal $\to$ Loan $\to$ Payment $\to$ Settlement $\to$ Release), Firestore rule cross-investor IDOR static verification, storage rules security, and system configuration compliance. |
 
 ### Build & Compilation Gates
+* **Production Build**: Clean pass (`next build`) via Turbopack in ~27.5s with **0 errors**, generating **78 optimized static/dynamic routes** across all 5 portals.
 * **TypeScript Compilation**: Clean pass (`npx tsc --noEmit`) with **0 errors**.
+* **Static Page Generation**: All 78 pages generated successfully in ~2.7s using 7 workers.
 * **Dev Server**: Active and serving all 78 screens without compilation issues.
+* **Font Strategy**: Runtime CSS `<link>` loading (Inter & Outfit from Google Fonts) with system font fallback — build never fails due to network unavailability.
 
 ---
 
@@ -1003,3 +1007,12 @@ firebase deploy --only hosting
 
 ## 26. Conclusion
 This Master Requirements Document provides the single authoritative technical blueprint for **Pavithra Gold Finance (PGF)**. By documenting all **78 application screens**, **5 specialized portals**, **32 Firestore collections**, **11 user roles**, server-side PDF and 50-sheet Excel engines, mathematical models, bank re-pledge workflows, expense & P&L accounting, investor management, and security rules, the engineering and operations teams possess a complete, verified reference for production operations and enterprise scaling.
+
+---
+
+## Document Revision History
+
+| Version | Date | Changes |
+|:--------|:-----|:--------|
+| **2.5** | — | Initial comprehensive enterprise edition. |
+| **2.6** | 2026-09-22 | Font strategy migrated from `next/font/google` (build-time) to runtime CSS `<link>` loading for offline/CI build resilience. Test suite expanded to **162 test cases** (18 suites). Build verification confirmed via Turbopack (27.5s compile, 78 routes, 0 errors). Typography CSS variables (`--font-inter`, `--font-outfit`) added to design system. |

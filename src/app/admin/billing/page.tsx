@@ -37,6 +37,7 @@ import { createNotification } from '@/lib/db/notifications';
 import PDFPreviewModal from '@/components/PDFPreviewModal';
 import RePledgeCard from '@/components/RePledgeCard';
 import { getPdfApiUrl, downloadPdfDocument, printPdfDocument } from '@/lib/pdfHelper';
+import { exportPageToExcel } from '@/lib/excel-enterprise';
 import type { GoldCollateral, BankRePledge } from '@/types/database';
 
 function BillingContent() {
@@ -1213,14 +1214,20 @@ function BillingContent() {
               <h3 className="text-xs font-bold text-blue-600 uppercase tracking-wider border-b border-gray-100 pb-2">Billing Ledger Reports</h3>
               <p className="text-gray-500 text-xs leading-relaxed">Download aggregate billing history collections report instantly.</p>
               <div className="flex gap-3">
-                <a 
-                  href="/api/pdf?type=receipt"
-                  target="_blank"
-                  className="px-4 py-2 rounded bg-gray-50 hover:bg-gray-100 border border-gray-200 text-blue-600 text-xs font-bold transition flex items-center gap-1.5"
+                <button 
+                  type="button"
+                  onClick={() => {
+                    if (bills.length === 0) {
+                      alert('No billing records found to export for the ledger.');
+                      return;
+                    }
+                    exportPageToExcel(bills, `PGF_Daily_Collection_Ledger_${new Date().toISOString().split('T')[0]}`, 'Billing Ledger');
+                  }}
+                  className="px-4 py-2 rounded bg-gray-50 hover:bg-gray-100 border border-gray-200 text-blue-600 text-xs font-bold transition flex items-center gap-1.5 cursor-pointer"
                 >
                   <Download size={14} />
-                  Daily Collection Ledger
-                </a>
+                  Export Daily Collection Ledger (Excel)
+                </button>
               </div>
             </div>
           </div>
@@ -1311,8 +1318,6 @@ function BillingContent() {
                             const url = getPdfApiUrl({
                               type: 'receipt',
                               paymentId: b.paymentId || b.id,
-                              loanId: b.loanDocId || b.loanNumber,
-                              customerId: b.customerDocId,
                               amount: b.amount,
                             });
                             setPreviewUrl(url);
@@ -1329,8 +1334,6 @@ function BillingContent() {
                             downloadPdfDocument({
                               type: 'receipt',
                               paymentId: b.paymentId || b.id,
-                              loanId: b.loanDocId || b.loanNumber,
-                              customerId: b.customerDocId,
                               amount: b.amount,
                             }, `PGF_Receipt_${b.billNo}.pdf`);
                           }}

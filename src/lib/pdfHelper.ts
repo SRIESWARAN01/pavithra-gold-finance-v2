@@ -143,6 +143,7 @@ export async function downloadPdfDocument(params: PdfParams, defaultFilename?: s
       customAmount: params.amount,
       download: true,
       token,
+      format: params.format,
       ...(params.payload || {})
     };
 
