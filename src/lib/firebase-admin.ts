@@ -13,10 +13,15 @@ function initAdmin(): admin.app.App {
     return admin.apps[0]!;
   }
 
-  const projectId =
-    process.env.FIREBASE_ADMIN_PROJECT_ID ||
-    process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID ||
-    'pavithra-gold-finance';
+  const adminProjectId = process.env.FIREBASE_ADMIN_PROJECT_ID;
+  const clientProjectId = process.env.NEXT_PUBLIC_FIREBASE_PROJECT_ID;
+  if (adminProjectId && clientProjectId && adminProjectId !== clientProjectId) {
+    throw new Error('Firebase Admin and client project IDs must match.');
+  }
+  const projectId = adminProjectId || clientProjectId;
+  if (!projectId && process.env.NODE_ENV === 'production') {
+    throw new Error('FIREBASE_ADMIN_PROJECT_ID or NEXT_PUBLIC_FIREBASE_PROJECT_ID must be set in production.');
+  }
 
   const clientEmail = process.env.FIREBASE_ADMIN_CLIENT_EMAIL;
   const privateKey = formatPrivateKey(process.env.FIREBASE_ADMIN_PRIVATE_KEY);
@@ -28,7 +33,7 @@ function initAdmin(): admin.app.App {
   if (clientEmail && privateKey) {
     return admin.initializeApp({
       credential: admin.credential.cert({
-        projectId,
+      projectId: projectId || undefined,
         clientEmail,
         privateKey,
       }),
@@ -38,7 +43,7 @@ function initAdmin(): admin.app.App {
 
   // Fallback: Initialize with project ID for development or Cloud environments
   return admin.initializeApp({
-    projectId,
+    ...(projectId ? { projectId } : {}),
     storageBucket,
   });
 }
@@ -52,35 +57,44 @@ export const adminMessaging = adminApp.messaging();
 export default adminApp;
 
 /**
- * Safely verify a Firebase ID Token with development clock-skew fallback.
- * Checks authoritative profile in Firestore if role is not in custom claims.
+ * Safely verify a Firebase ID Token.
+ * Checks authoritative profile in Firestore — role is always resolved from
+ * the server-side profile document, never from the token payload alone.
+ *
+ * SECURITY NOTES:
+ * - No hardcoded dev/mock tokens. Use Firebase Emulator Auth for local dev.
+ * - No fallback to Admin role under any circumstances.
+ * - In non-production with missing ADC, falls back to JWT decode but still
+ *   requires a valid Firestore profile with an explicit role.
  */
 export async function verifyAuthToken(idToken: string): Promise<{ uid: string; role: string; [key: string]: any }> {
-  // 1. Direct dev mock tokens (strictly disabled in production)
-  if (process.env.NODE_ENV !== 'production') {
-    if (idToken === 'test-dev-admin-token' || idToken === 'test-dev-token') {
-      return { uid: 'dev_admin', role: 'Admin' };
-    }
-    if (idToken === 'test-dev-customer-token') {
-      return { uid: 'cust_sample_123', role: 'Customer' };
-    }
+  if (!idToken || typeof idToken !== 'string' || idToken.trim().length === 0) {
+    throw Object.assign(new Error('Authentication token is required.'), { code: 'auth/argument-error' });
   }
 
   try {
-    const decoded = await adminAuth.verifyIdToken(idToken);
-    let role = (decoded.role as string) || null;
-    if (!role) {
-      try {
-        const profileSnap = await adminDb.collection('profiles').doc(decoded.uid).get();
-        if (profileSnap.exists) {
-          role = (profileSnap.data()?.role as string) || 'Customer';
-        }
-      } catch {
-        role = (decoded.role as string) || 'Customer';
-      }
+    const decoded = await adminAuth.verifyIdToken(idToken, process.env.NODE_ENV === 'production');
+    const profileSnap = await adminDb.collection('profiles').doc(decoded.uid).get();
+    if (!profileSnap.exists) {
+      throw Object.assign(new Error('Authenticated user profile does not exist.'), { code: 'auth/profile-not-found' });
     }
-    return { ...decoded, uid: decoded.uid, role: role || 'Customer' };
+    const profile = profileSnap.data();
+    if (profile?.status !== 'Active') {
+      throw Object.assign(new Error('Authenticated user account is inactive.'), { code: 'auth/user-disabled' });
+    }
+
+    const role = typeof profile.role === 'string' ? profile.role : null;
+    if (!role) {
+      throw Object.assign(new Error('User profile is missing a role assignment.'), { code: 'auth/claims-stale' });
+    }
+
+    return { ...decoded, uid: decoded.uid, role };
   } catch (err: any) {
+    // If the error was already a profile/role/auth check error, re-throw immediately
+    if (err.code === 'auth/profile-not-found' || err.code === 'auth/user-disabled' || err.code === 'auth/claims-stale') {
+      throw err;
+    }
+
     const isCredError =
       err.message?.includes('default credentials') ||
       err.message?.includes('Could not load the default credentials') ||
@@ -89,31 +103,44 @@ export async function verifyAuthToken(idToken: string): Promise<{ uid: string; r
       err.code === 'auth/id-token-expired' ||
       err.message?.includes('auth/id-token-expired');
 
-    // In non-production environments, handle missing credentials or clock skew by decoding token payload
+    // In non-production environments ONLY, handle missing ADC or clock skew
+    // by decoding the JWT payload — but STILL require a valid Firestore profile.
     if (process.env.NODE_ENV !== 'production' && (isCredError || isExpiredError)) {
-      console.warn(`[ServerAuth] ⚠️ Dev fallback (${isCredError ? 'Default credentials missing' : 'Clock skew'}). Decoding token payload locally.`);
+      console.warn(`[ServerAuth] ⚠️ Dev fallback (${isCredError ? 'Default credentials missing' : 'Clock skew'}). Decoding token payload locally. Profile lookup still required.`);
       const parts = idToken.split('.');
       if (parts.length === 3) {
         try {
           const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf-8'));
           const uid = payload.user_id || payload.sub;
           if (uid) {
-            let role = (payload.role as string) || null;
-            // Attempt to check profile using client SDK db (which uses API key, no ADC needed)
+            // Attempt profile lookup via client SDK (uses API key, no ADC needed)
             try {
               const { db } = await import('@/lib/firebase');
               const { doc, getDoc } = await import('firebase/firestore');
               const pSnap = await getDoc(doc(db, 'profiles', uid));
               if (pSnap.exists()) {
-                role = (pSnap.data()?.role as string) || role || 'Customer';
+                const profileData = pSnap.data();
+                if (profileData?.status !== 'Active') {
+                  throw Object.assign(new Error('Authenticated user account is inactive.'), { code: 'auth/user-disabled' });
+                }
+                const role = typeof profileData.role === 'string' ? profileData.role : null;
+                if (!role) {
+                  throw Object.assign(new Error('User profile is missing a role assignment.'), { code: 'auth/claims-stale' });
+                }
+                return { ...payload, uid, role };
               }
-            } catch {
-              // Fallback to payload role or default Admin in dev
-              role = role || 'Admin';
+            } catch (profileErr: any) {
+              // Re-throw auth-specific errors from profile lookup
+              if (profileErr.code === 'auth/user-disabled' || profileErr.code === 'auth/claims-stale') {
+                throw profileErr;
+              }
+              console.warn('[ServerAuth] Client-side profile lookup failed:', profileErr);
             }
-            return { ...payload, uid, role: role || 'Admin' };
+            // If profile lookup failed entirely, do NOT default to any role
+            throw Object.assign(new Error('Dev fallback: Could not verify user profile. Ensure the user exists in Firestore profiles collection.'), { code: 'auth/profile-not-found' });
           }
-        } catch (parseErr) {
+        } catch (parseErr: any) {
+          if (parseErr.code?.startsWith('auth/')) throw parseErr;
           console.error('[ServerAuth] Failed to parse token payload:', parseErr);
         }
       }

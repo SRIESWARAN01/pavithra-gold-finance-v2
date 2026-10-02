@@ -8,45 +8,29 @@ service cloud.firestore {
     // =========================================================================
 
     function isAuthenticated() {
-      return request.auth != null;
+      return request.auth != null &&
+        exists(/databases/$(database)/documents/profiles/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.status == 'Active';
     }
-
-
-    function hasProfile() {
-      return isAuthenticated() && exists(/databases/$(database)/documents/profiles/$(request.auth.uid));
-    }
-
     function getUserRole() {
-      return request.auth.token.role != null
-        ? request.auth.token.role
-        : (hasProfile() ? get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role : null);
+      return isAuthenticated()
+        ? get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.role
+        : null;
     }
 
     function isAdmin() {
-      return isAuthenticated() && (
-        request.auth.token.role in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'] ||
-        getUserRole() in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'] ||
-        (request.auth.token.email != null && (
-          request.auth.token.email == '7094826586@pgf.local' ||
-          request.auth.token.email.matches('.*admin.*') ||
-          request.auth.token.email.matches('.*owner.*')
-        )) ||
-        request.auth.token.phone_number == '+917094826586'
-      );
+      return isAuthenticated() && getUserRole() in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'];
     }
 
     function isManager() {
-      return isAdmin() || (
-        request.auth.token.role in ['Manager', 'manager', 'MANAGER'] ||
-        (hasProfile() && getUserRole() in ['Manager', 'manager', 'MANAGER'])
-      );
+      return isAdmin() || getUserRole() in ['Manager', 'manager', 'MANAGER'];
     }
 
     function isStaff() {
       return isAuthenticated() && (
         isAdmin() ||
         isManager() ||
-        request.auth.token.role in [
+        getUserRole() in [
           'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
           'Manager', 'manager', 'MANAGER',
           'Appraiser', 'appraiser', 'APPRAISER',
@@ -56,22 +40,7 @@ service cloud.firestore {
           'Collection_Officer', 'collection_officer',
           'Customer_Support', 'customer_support',
           'Staff', 'staff', 'STAFF'
-        ] ||
-        (hasProfile() && getUserRole() in [
-          'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
-          'Manager', 'manager', 'MANAGER',
-          'Appraiser', 'appraiser', 'APPRAISER',
-          'Cashier', 'cashier', 'CASHIER',
-          'Employee', 'employee', 'EMPLOYEE',
-          'Accountant', 'accountant', 'ACCOUNTANT',
-          'Collection_Officer', 'collection_officer',
-          'Customer_Support', 'customer_support',
-          'Staff', 'staff', 'STAFF'
-        ]) ||
-        (request.auth.token.email != null && (
-          request.auth.token.email == '7094826586@pgf.local' ||
-          request.auth.token.email.matches('.*@pgf[.]local')
-        ))
+        ]
       );
     }
 
@@ -79,8 +48,11 @@ service cloud.firestore {
     // Profiles
     // =========================================================================
     match /profiles/{profileId} {
-      allow read: if isAuthenticated();
-      allow create: if isAuthenticated();
+      allow read: if isStaff() || (isAuthenticated() && request.auth.uid == profileId);
+      allow create: if isAdmin() || (
+        isAuthenticated() && request.auth.uid == profileId &&
+        request.resource.data.role == 'Customer' && request.resource.data.status == 'Active'
+      ) || (isStaff() && request.resource.data.role == 'Customer');
       allow update: if isAdmin() || (
         isAuthenticated() && request.auth.uid == profileId &&
         !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role', 'status'])
@@ -258,32 +230,35 @@ service cloud.firestore {
 
     match /investment_accounts/{accountId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow create: if isStaff() || (isAuthenticated() && (accountId == request.auth.uid || request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
-      allow update: if isStaff() || (isAuthenticated() && (accountId == request.auth.uid || (resource != null && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid))));
+      allow create, update: if isStaff();
       allow delete: if isAdmin();
     }
 
     match /investment_lots/{lotId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow create: if isStaff() || (isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
+      allow create: if isStaff();
       allow update, delete: if isStaff();
     }
 
     match /investment_transactions/{txnId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow create: if isStaff() || (isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid));
+      allow create: if isStaff();
       allow update, delete: if isStaff();
     }
 
     match /withdrawal_requests/{wdrId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow create: if isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.investor_id == request.auth.uid &&
+        request.resource.data.status == 'Pending' && request.resource.data.requested_amount is number &&
+        request.resource.data.requested_amount > 0;
       allow update, delete: if isStaff();
     }
 
     match /investment_payment_requests/{reqId} {
       allow read: if isStaff() || (isAuthenticated() && (resource.data.investor_id == request.auth.uid || resource.data.investorId == request.auth.uid));
-      allow create: if isAuthenticated() && (request.resource.data.investor_id == request.auth.uid || request.resource.data.investorId == request.auth.uid);
+      allow create: if isAuthenticated() && request.resource.data.investor_id == request.auth.uid &&
+        request.resource.data.status == 'Pending_Verification' && request.resource.data.amount is number &&
+        request.resource.data.amount > 0;
       allow update, delete: if isStaff();
     }
 
@@ -300,8 +275,22 @@ service cloud.firestore {
 
     match /investment_audit_logs/{logId} {
       allow read: if isStaff();
-      allow create: if isAuthenticated();
+      allow create: if isStaff() || (
+        isAuthenticated() && request.resource.data.actor_id == request.auth.uid &&
+        request.resource.data.action in [
+          'INVESTMENT_PAYMENT_SUBMITTED', 'WITHDRAWAL_REQUESTED', 'UPDATE_INVESTOR_PROFILE'
+        ]
+      );
       allow update, delete: if false;
+    }
+
+    // =========================================================================
+    // GLOBAL DENY-ALL CATCH-ALL (Defense in Depth)
+    // Any collection not explicitly matched above is denied for all operations.
+    // This prevents accidental data exposure through unmapped Firestore paths.
+    // =========================================================================
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

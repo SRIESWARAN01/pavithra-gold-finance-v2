@@ -34,7 +34,8 @@ function formatINR(val: number): string {
 }
 
 /**
- * Authenticate incoming request via Firebase ID Token
+ * Authenticate incoming request via Firebase ID Token.
+ * No dev bypasses or mock tokens — all environments require valid authentication.
  */
 async function authenticatePdfRequest(
   req: NextRequest,
@@ -50,26 +51,8 @@ async function authenticatePdfRequest(
     token = searchParams.get('token') || body?.token || null;
   }
 
-  const isDev = process.env.NODE_ENV !== 'production';
-
   if (!token) {
-    if (isDev && (process.env.DEV_BYPASS_PDF_AUTH === 'true' || process.env.TEST_ENV === 'true')) {
-      console.warn('[PDF Auth] ⚠️ DEV BYPASS active — skipping authentication. This MUST NOT be enabled in production.');
-      return { uid: 'dev_admin', role: 'Admin' };
-    }
     throw new Error('UNAUTHORIZED: Authentication is required to generate or download documents.');
-  }
-
-  // Handle mock dev tokens in non-production environments only
-  if (isDev) {
-    if (token === 'test-dev-admin-token' || token === 'test-dev-token') {
-      console.warn('[PDF Auth] ⚠️ Dev mock token used — not valid in production.');
-      return { uid: 'dev_admin', role: 'Admin' };
-    }
-    if (token === 'test-dev-customer-token') {
-      console.warn('[PDF Auth] ⚠️ Dev mock customer token used — not valid in production.');
-      return { uid: 'cust_sample_123', role: 'Customer' };
-    }
   }
 
   try {

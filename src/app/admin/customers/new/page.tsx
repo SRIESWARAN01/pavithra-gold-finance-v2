@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useRef, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { 
   Upload, 
@@ -30,19 +30,17 @@ import {
   Coins
 } from 'lucide-react';
 import { isFirebaseConfigured } from '@/lib/auth';
-import { uploadProfilePhoto, uploadSignature } from '@/lib/storage';
-import { createProfile, updateProfile } from '@/lib/db/profiles';
+import { uploadProfilePhoto, uploadSignature, uploadKYCDocument } from '@/lib/storage';
+import { updateProfile } from '@/lib/db/profiles';
 import { createNotification } from '@/lib/db/notifications';
 import { auth, db } from '@/lib/firebase';
 import { collection, getDocs } from 'firebase/firestore';
-import type { UserRole } from '@/types/database';
 import ConfettiCelebration from '@/components/ConfettiCelebration';
 import SuccessAnimation from '@/components/SuccessAnimation';
 import { compressImage } from '@/lib/imageCompressor';
 
 export default function CustomerOnboarding() {
   const router = useRouter();
-  const [role, setRole] = useState<UserRole>('Customer');
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
   const [phoneAlt, setPhoneAlt] = useState('');
@@ -68,9 +66,10 @@ export default function CustomerOnboarding() {
   const [branches, setBranches] = useState<{ id: string; name: string; code: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [duplicateWarning, setDuplicateWarning] = useState<any[] | null>(null);
+  const [duplicateWarning, setDuplicateWarning] = useState<Array<{ id: string; name: string; phone_primary: string; customer_number?: string | null }> | null>(null);
   const [createdCustomer, setCreatedCustomer] = useState<{ id: string; name: string; phone: string; email?: string; customer_number?: string; password?: string; role: string } | null>(null);
   const [copiedPassword, setCopiedPassword] = useState(false);
+  const requestIdRef = useRef<string | null>(null);
 
   // Nominee state
   const [nomineeName, setNomineeName] = useState('');
@@ -88,6 +87,14 @@ export default function CustomerOnboarding() {
   const [voterIdFile, setVoterIdFile] = useState<string | null>(null);
   const [drivingLicenseFile, setDrivingLicenseFile] = useState<string | null>(null);
   const [passportFile, setPassportFile] = useState<string | null>(null);
+  const [kycFiles, setKycFiles] = useState<Record<'aadhaar_front' | 'aadhaar_back' | 'pan' | 'voter_id' | 'driving_license' | 'passport', File | null>>({
+    aadhaar_front: null,
+    aadhaar_back: null,
+    pan: null,
+    voter_id: null,
+    driving_license: null,
+    passport: null,
+  });
 
   // Load branches
   useEffect(() => {
@@ -149,6 +156,15 @@ export default function CustomerOnboarding() {
   const handleKycDocUpload = (type: string, e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+    if (!allowedTypes.includes(file.type) || file.size <= 0 || file.size > 10 * 1024 * 1024) {
+      setError('KYC documents must be JPG, PNG, WebP, or PDF files smaller than 10 MB.');
+      e.target.value = '';
+      return;
+    }
+    const supportedTypes = ['aadhaar_front', 'aadhaar_back', 'pan', 'voter_id', 'driving_license', 'passport'] as const;
+    if (!supportedTypes.includes(type as (typeof supportedTypes)[number])) return;
+    setKycFiles((current) => ({ ...current, [type]: file }));
     if (type === 'aadhaar_front') setAadhaarFrontFile(file.name);
     else if (type === 'aadhaar_back') setAadhaarBackFile(file.name);
     else if (type === 'pan') setPanFile(file.name);
@@ -183,161 +199,98 @@ export default function CustomerOnboarding() {
       return;
     }
 
-    // Auto-generate password if left empty
-    const finalPassword = password.trim() || `PGF@${cleanPhone.slice(-4) || '2026'}`;
+    const finalPassword = password.trim();
+    if (finalPassword.length < 8) {
+      setError('Please choose a password with at least 8 characters.');
+      setLoading(false);
+      return;
+    }
 
     try {
-      let profileId = '';
-      let customerNumber = '';
+      if (!isFirebaseConfigured()) throw new Error('Firebase connection is not configured. Real database connection is required.');
+      const idToken = await auth.currentUser?.getIdToken(true);
+      if (!idToken) throw new Error('Your administrator session has expired. Please sign in again.');
+      if (!requestIdRef.current) requestIdRef.current = crypto.randomUUID();
 
-      if (isFirebaseConfigured()) {
-        try {
-          // 1. Call Onboard API route to create user in Auth and profiles table
-          const idToken = await auth.currentUser?.getIdToken(true);
-          if (!idToken) {
-            throw new Error('Your administrator session has expired. Please sign in again.');
-          }
-          const res = await fetch('/api/admin/onboard', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${idToken}`,
-            },
-            body: JSON.stringify({
-              name: name.trim(),
-              phone: cleanPhone,
-              password: finalPassword,
-              phoneAlt: phoneAlt.trim() || undefined,
-              email: email.trim(),
-              dateOfBirth: dateOfBirth || undefined,
-              gender: gender || undefined,
-              maritalStatus: maritalStatus || undefined,
-              address: address.trim() || undefined,
-              nationalId: nationalId.trim() || undefined,
-              panNumber: panNumber.trim() || undefined,
-              city: city.trim() || undefined,
-              district: district.trim() || undefined,
-              state: state.trim() || 'Tamil Nadu',
-              pinCode: pinCode.trim() || undefined,
-              occupation: occupation.trim() || undefined,
-              monthlyIncome: monthlyIncome ? parseFloat(monthlyIncome) : undefined,
-              referencePerson: referencePerson.trim() || undefined,
-              referencePhone: referencePhone.trim() || undefined,
-              nomineeName: nomineeName.trim() || undefined,
-              nomineeRelation: nomineeRelation.trim() || undefined,
-              nomineeMobile: nomineeMobile.trim() || undefined,
-              kycStatus: nationalId || panNumber ? 'Submitted' : 'Pending',
-              branchId: selectedBranchId || undefined,
-              branchCode: selectedBranchCode || undefined,
-              role,
-            }),
-          });
+      const res = await fetch('/api/admin/onboard', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+        body: JSON.stringify({
+          requestId: requestIdRef.current,
+          name: name.trim(),
+          phone: cleanPhone,
+          password: finalPassword,
+          phoneAlt: phoneAlt.trim() || undefined,
+          email: email.trim().toLowerCase(),
+          dateOfBirth: dateOfBirth || undefined,
+          gender: gender || undefined,
+          maritalStatus: maritalStatus || undefined,
+          address: address.trim() || undefined,
+          nationalId: nationalId.trim() || undefined,
+          panNumber: panNumber.trim() || undefined,
+          city: city.trim() || undefined,
+          district: district.trim() || undefined,
+          state: state.trim() || 'Tamil Nadu',
+          pinCode: pinCode.trim() || undefined,
+          occupation: occupation.trim() || undefined,
+          monthlyIncome: monthlyIncome ? parseFloat(monthlyIncome) : undefined,
+          referencePerson: referencePerson.trim() || undefined,
+          referencePhone: referencePhone.trim() || undefined,
+          nomineeName: nomineeName.trim() || undefined,
+          nomineeRelation: nomineeRelation.trim() || undefined,
+          nomineeMobile: nomineeMobile.trim() || undefined,
+          faceMatchScore: undefined,
+          kycExpiryDate: undefined,
+          branchId: selectedBranchId || undefined,
+          branchCode: selectedBranchCode || undefined,
+        }),
+      });
+      const resData = await res.json();
+      if (res.status === 409 && Array.isArray(resData.duplicates)) {
+        setDuplicateWarning(resData.duplicates);
+        throw new Error(resData.error || 'A matching customer account already exists.');
+      }
+      if (!res.ok || !resData.profile?.id) throw new Error(resData.error || 'Customer account could not be created. Please retry.');
 
-          const resData = await res.json();
-          if (res.status === 409 && resData.duplicates) {
-            setDuplicateWarning(resData.duplicates);
-            setError(resData.error);
-            setLoading(false);
-            return;
-          }
-          if (res.ok && resData.profile?.id) {
-            profileId = resData.profile.id;
-            customerNumber = resData.profile.customer_number || `PGF-${cleanPhone.slice(-6)}`;
-          } else {
-            throw new Error(resData.error || 'API creation fallback');
-          }
-        } catch (apiErr: any) {
-          if (apiErr.message?.includes('Duplicate')) {
-            throw apiErr;
-          }
-          // Direct client fallback creation
-          let authUid = `cust_${cleanPhone}`;
-          try {
-            const { initializeApp, deleteApp } = await import('firebase/app');
-            const { getAuth, createUserWithEmailAndPassword, signOut: secondarySignOut } = await import('firebase/auth');
-            const { firebaseConfig } = await import('@/lib/firebase');
+      const profileId = resData.profile.id as string;
+      const customerNumber = resData.profile.customer_number as string;
 
-            const secondaryAppName = `cust-onboard-${Date.now()}`;
-            const secondaryApp = initializeApp(firebaseConfig, secondaryAppName);
-            const secondaryAuth = getAuth(secondaryApp);
-            const authEmail = email.trim() || `${cleanPhone}@pgf.local`;
-            const userCred = await createUserWithEmailAndPassword(secondaryAuth, authEmail, finalPassword);
-            authUid = userCred.user.uid;
-            await secondarySignOut(secondaryAuth);
-            await deleteApp(secondaryApp);
-          } catch (authErr: any) {
-            console.warn('Customer fallback auth creation note:', authErr);
-            authUid = `user_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-          }
-
-          const directProfile = await createProfile({
-            id: authUid,
-            name: name.trim(),
-            phone_primary: cleanPhone,
-            phone_alt: phoneAlt.trim() || undefined,
-            email: email.trim() || undefined,
-            date_of_birth: dateOfBirth || undefined,
-            gender: (gender as any) || undefined,
-            marital_status: (maritalStatus as any) || undefined,
-            address: address.trim() || 'Tamil Nadu',
-            national_id: nationalId.trim() || '',
-            pan_number: panNumber.trim() || undefined,
-            city: city.trim() || undefined,
-            district: district.trim() || undefined,
-            state: state.trim() || 'Tamil Nadu',
-            pin_code: pinCode.trim() || undefined,
-            occupation: occupation.trim() || undefined,
-            monthly_income: monthlyIncome ? parseFloat(monthlyIncome) : undefined,
-            reference_person: referencePerson.trim() || undefined,
-            reference_phone: referencePhone.trim() || undefined,
-            nominee_name: nomineeName.trim() || undefined,
-            nominee_relation: nomineeRelation.trim() || undefined,
-            nominee_mobile: nomineeMobile.trim() || undefined,
-            kyc_status: nationalId || panNumber ? 'Submitted' : 'Pending',
-            branch_id: selectedBranchId || undefined,
-            role,
-          }, selectedBranchCode || undefined);
-          profileId = directProfile.id;
-          customerNumber = directProfile.customer_number || `PGF-${cleanPhone.slice(-6)}`;
-        }
-
-        // 2. Upload Portrait photo to Storage if provided
+        // Upload selected identity documents and profile media; report failures so the record is not presented as fully onboarded.
         let photoUrl: string | null = null;
         if (photoPreview) {
-          try {
-            photoUrl = await uploadProfilePhoto(profileId, photoPreview);
-          } catch (e) {
-            console.warn('Failed to upload photo to storage:', e);
-          }
+          photoUrl = await uploadProfilePhoto(profileId, photoPreview);
         }
 
         // 3. Upload electronic signature to Storage if provided
         let signatureUrl: string | null = null;
         if (signaturePreview) {
-          try {
-            signatureUrl = await uploadSignature(profileId, signaturePreview);
-          } catch (e) {
-            console.warn('Failed to upload signature to storage:', e);
-          }
+          signatureUrl = await uploadSignature(profileId, signaturePreview);
+        }
+
+        const kycUrls: Record<string, string> = {};
+        for (const [type, file] of Object.entries(kycFiles)) {
+          if (file) kycUrls[`${type}_url`] = await uploadKYCDocument(profileId, type as keyof typeof kycFiles, file);
         }
 
         // 4. Update profile row with URLs if uploaded
-        if (photoUrl || signatureUrl) {
+        if (photoUrl || signatureUrl || Object.keys(kycUrls).length) {
           await updateProfile(profileId, {
             photo_url: photoUrl || undefined,
             signature_url: signatureUrl || undefined,
+            ...kycUrls,
           });
         }
 
-        // Trigger welcome notification
+      // Notifications are secondary; an unavailable notification channel must not roll back a saved KYC profile.
+      try {
         await createNotification({
           recipient_id: profileId,
           type: 'Welcome',
           title: 'Welcome to Pavithra Gold Finance!',
           message: `Hello ${name}, your customer profile account has been successfully created.`,
         });
-      } else {
-        throw new Error('Firebase connection is not configured or unavailable. Real database connection is required.');
+      } catch (_notificationError) {
+        console.warn('Customer profile created but welcome notification failed.');
       }
 
       setCreatedCustomer({
@@ -347,10 +300,10 @@ export default function CustomerOnboarding() {
         email: email.trim(),
         customer_number: customerNumber || `PGF-${cleanPhone.slice(-6)}`,
         password: finalPassword,
-        role,
+        role: 'Customer',
       });
-    } catch (err: any) {
-      setError(err.message || 'Failed to register customer profile.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to register customer profile.');
     } finally {
       setLoading(false);
     }
@@ -403,23 +356,12 @@ export default function CustomerOnboarding() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 bg-[#F8FAFC] p-4 rounded-xl border border-gray-100">
-            {/* Role Switcher */}
+            {/* This workflow provisions customer accounts only; staff accounts are managed separately. */}
             <div className="space-y-1.5">
               <label className="text-gray-700 font-bold block">Account Access Role *</label>
-              <select
-                value={role}
-                onChange={(e) => setRole(e.target.value as UserRole)}
-                className="w-full bg-white border border-gray-200 focus:border-[#2563EB] text-gray-900 text-xs rounded-xl px-3 py-2.5 outline-none font-medium"
-              >
-                <option value="Customer">Customer (Customer Portal)</option>
-                <option value="Admin">Administrator (Full Access)</option>
-                <option value="Manager">Branch Manager</option>
-                <option value="Cashier">Cashier</option>
-                <option value="Appraiser">Gold Appraiser</option>
-                <option value="Accountant">Accountant</option>
-                <option value="Collection_Officer">Collection Officer</option>
-                <option value="Customer_Support">Customer Support</option>
-              </select>
+              <div className="w-full bg-gray-100 border border-gray-200 text-gray-700 text-xs rounded-xl px-3 py-2.5 font-medium">
+                Customer (Customer Portal)
+              </div>
             </div>
 
             {/* Branch Allocation */}
@@ -443,12 +385,14 @@ export default function CustomerOnboarding() {
             {/* Portal Password */}
             <div className="space-y-1.5">
               <label className="text-gray-700 font-bold block">
-                Portal Login Password <span className="text-xs font-normal text-gray-400">(Optional)</span>
+                Portal Login Password <span className="text-red-500">*</span>
               </label>
               <div className="relative">
                 <input
                   type={showPassword ? 'text' : 'password'}
-                  placeholder="Optional (Auto-generated if empty)"
+                  placeholder="At least 8 characters"
+                  minLength={8}
+                  required
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   className="w-full bg-white border border-gray-200 focus:border-[#2563EB] text-gray-900 text-xs rounded-xl pl-3 pr-9 py-2.5 outline-none font-mono"
@@ -986,6 +930,14 @@ export default function CustomerOnboarding() {
                       setPassword('');
                       setPhotoPreview(null);
                       setSignaturePreview(null);
+                      setKycFiles({ aadhaar_front: null, aadhaar_back: null, pan: null, voter_id: null, driving_license: null, passport: null });
+                      setAadhaarFrontFile(null);
+                      setAadhaarBackFile(null);
+                      setPanFile(null);
+                      setVoterIdFile(null);
+                      setDrivingLicenseFile(null);
+                      setPassportFile(null);
+                      requestIdRef.current = null;
                     }}
                     className="py-2.5 border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-bold rounded-xl transition"
                   >

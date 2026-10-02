@@ -5,7 +5,6 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, Lock, Eye, EyeOff, ShieldAlert, CheckCircle2, Key } from 'lucide-react';
 import { auth } from '@/lib/firebase';
 import { updatePassword, signOut } from 'firebase/auth';
-import { isFirebaseConfigured } from '@/lib/auth';
 import Logo from '@/components/Logo';
 
 function ResetForm() {
@@ -56,15 +55,14 @@ function ResetForm() {
     }
 
     try {
-      if (isFirebaseConfigured()) {
-        if (!auth.currentUser) throw new Error('No authenticated user session found.');
-        await updatePassword(auth.currentUser, newPassword);
-        // Clear session so they must sign in again with the new password
-        await signOut(auth);
-      } else {
-        // Dev bypass
-        await new Promise(resolve => setTimeout(resolve, 1500));
+      const currentUser = auth.currentUser;
+      if (!currentUser) throw new Error('A verified account session is required to reset the password.');
+      const verifiedPhone = currentUser.phoneNumber?.replace(/^\+91/, '');
+      if (!verifiedPhone || verifiedPhone !== phone.replace(/^\+91/, '')) {
+        throw new Error('The verified account does not match this phone number. Restart account recovery.');
       }
+      await updatePassword(currentUser, newPassword);
+      await signOut(auth);
 
       setSuccess(true);
       setTimeout(() => router.push('/'), 2000);

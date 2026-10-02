@@ -5,34 +5,23 @@ service firebase.storage {
 
     // Helper: Check if the requesting user is authenticated
     function isAuthenticated() {
-      return request.auth != null;
-    }
-
-    // Helper: Check if user profile exists in Firestore
-    function hasProfile() {
-      return isAuthenticated() &&
-        firestore.exists(/databases/(default)/documents/profiles/$(request.auth.uid));
+      return request.auth != null &&
+        firestore.exists(/databases/(default)/documents/profiles/$(request.auth.uid)) &&
+        firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.status == 'Active';
     }
 
     // Helper: Get user's role from profile
     function getUserRole() {
-      return request.auth.token.role != null
-        ? request.auth.token.role
-        : (hasProfile() ? firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.role : null);
+      return isAuthenticated()
+        ? firestore.get(/databases/(default)/documents/profiles/$(request.auth.uid)).data.role
+        : null;
     }
 
     // Helper: Check if requesting user has an Admin/Owner role
     function isAdmin() {
       return isAuthenticated() && (
         getUserRole() == 'Admin' || getUserRole() == 'Owner' ||
-        request.auth.token.role in ['Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER'] ||
-        getUserRole() in ['admin', 'ADMIN', 'owner', 'OWNER'] ||
-        (request.auth.token.email != null && (
-          request.auth.token.email == '7094826586@pgf.local' ||
-          request.auth.token.email.matches('.*admin.*') ||
-          request.auth.token.email.matches('.*owner.*')
-        )) ||
-        request.auth.token.phone_number == '+917094826586'
+        getUserRole() in ['admin', 'ADMIN', 'owner', 'OWNER']
       );
     }
 
@@ -40,7 +29,7 @@ service firebase.storage {
     function isStaff() {
       return isAuthenticated() && (
         isAdmin() ||
-        request.auth.token.role in [
+        getUserRole() in [
           'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
           'Manager', 'manager', 'MANAGER',
           'Appraiser', 'appraiser', 'APPRAISER',
@@ -50,71 +39,87 @@ service firebase.storage {
           'Collection_Officer', 'collection_officer',
           'Customer_Support', 'customer_support',
           'Staff', 'staff', 'STAFF'
-        ] ||
-        (hasProfile() && getUserRole() in [
-          'Admin', 'admin', 'ADMIN', 'Owner', 'owner', 'OWNER',
-          'Manager', 'manager', 'MANAGER',
-          'Appraiser', 'appraiser', 'APPRAISER',
-          'Cashier', 'cashier', 'CASHIER',
-          'Employee', 'employee', 'EMPLOYEE',
-          'Accountant', 'accountant', 'ACCOUNTANT',
-          'Collection_Officer', 'collection_officer',
-          'Customer_Support', 'customer_support',
-          'Staff', 'staff', 'STAFF'
-        ]) ||
-        (request.auth.token.email != null && (
-          request.auth.token.email == '7094826586@pgf.local' ||
-          request.auth.token.email.matches('.*@pgf[.]local')
-        ))
+        ]
       );
+    }
+
+    function validImageUpload(maxBytes) {
+      return request.resource != null && request.resource.size <= maxBytes &&
+        request.resource.contentType.matches('image/(jpeg|png|webp)');
+    }
+
+    function validKycUpload() {
+      return request.resource != null && request.resource.size <= 10 * 1024 * 1024 &&
+        request.resource.contentType.matches('(image/(jpeg|png|webp)|application/pdf)');
+    }
+
+    function ownsCollateral(collateralId) {
+      return isAuthenticated() &&
+        firestore.exists(/databases/(default)/documents/gold_collateral/$(collateralId)) &&
+        firestore.get(/databases/(default)/documents/gold_collateral/$(collateralId)).data.customer_id == request.auth.uid;
     }
 
     // Customer profile photos — staff full access, customer read/write own
     match /customers/photos/{customerId}/{allPaths=**} {
       allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow create, update: if (isStaff() || (isAuthenticated() && request.auth.uid == customerId)) && validImageUpload(5 * 1024 * 1024);
+      allow delete: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
     // Customer signatures — staff full access, customer read/write own
     match /customers/signatures/{customerId}/{allPaths=**} {
       allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow create, update: if (isStaff() || (isAuthenticated() && request.auth.uid == customerId)) &&
+        request.resource != null && request.resource.size <= 2 * 1024 * 1024 && request.resource.contentType == 'image/png';
+      allow delete: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
     // Customer KYC documents — staff full access, customer read/write own
     match /customers/kyc/{customerId}/{allPaths=**} {
       allow read: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
+      allow create, update: if (isStaff() || (isAuthenticated() && request.auth.uid == customerId)) && validKycUpload();
+      allow delete: if isStaff() || (isAuthenticated() && request.auth.uid == customerId);
     }
 
     // Gold collateral photos — staff can write, authenticated users can read
-    match /collaterals/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+    match /collaterals/photos/{collateralId}/{allPaths=**} {
+      allow read: if isStaff() || ownsCollateral(collateralId);
+      allow create, update: if isStaff() && validImageUpload(10 * 1024 * 1024);
+      allow delete: if isStaff();
     }
 
     // Generated documents (PDFs) — staff can write, authenticated can read
     match /documents/{allPaths=**} {
-      allow read: if isAuthenticated();
-      allow write: if isStaff();
+      allow read, write: if isStaff();
     }
 
     // Investor payment screenshots — staff full access, investor read/write own
     match /investments/screenshots/{investorId}/{allPaths=**} {
       allow read: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+      allow create, update: if (isStaff() || (isAuthenticated() && request.auth.uid == investorId)) && validImageUpload(10 * 1024 * 1024);
+      allow delete: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
     }
 
     // Investor documents / KYC — staff full access, investor read/write own
     match /investments/documents/{investorId}/{allPaths=**} {
       allow read: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
-      allow write: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
+      allow create, update: if (isStaff() || (isAuthenticated() && request.auth.uid == investorId)) && validKycUpload();
+      allow delete: if isStaff() || (isAuthenticated() && request.auth.uid == investorId);
     }
 
     // Company branding assets (logo, seal) — admins can write, anyone authenticated can read
     match /company/{allPaths=**} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
+    }
+
+    // =========================================================================
+    // GLOBAL DENY-ALL CATCH-ALL (Defense in Depth)
+    // Any path not explicitly matched above is denied for all operations.
+    // This prevents accidental data exposure through unmapped storage paths.
+    // =========================================================================
+    match /{allPaths=**} {
+      allow read, write: if false;
     }
   }
 }

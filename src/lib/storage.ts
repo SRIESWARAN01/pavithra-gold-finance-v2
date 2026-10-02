@@ -82,10 +82,20 @@ export async function uploadSignature(
  */
 export async function uploadKYCDocument(
   customerId: string,
-  docType: 'aadhaar_front' | 'aadhaar_back' | 'pan',
+  docType: 'aadhaar_front' | 'aadhaar_back' | 'pan' | 'voter_id' | 'driving_license' | 'passport',
   file: File
 ): Promise<string> {
-  const ext = file.name.split('.').pop() || 'jpg';
+  const extensions: Record<string, string> = {
+    'image/jpeg': 'jpg',
+    'image/png': 'png',
+    'image/webp': 'webp',
+    'application/pdf': 'pdf',
+  };
+  const ext = extensions[file.type];
+  if (!ext) throw new Error('KYC documents must be JPG, PNG, WebP, or PDF files.');
+  if (file.size <= 0 || file.size > 10 * 1024 * 1024) {
+    throw new Error('KYC documents must be smaller than 10 MB.');
+  }
   const path = `customers/kyc/${customerId}/${uniqueName(docType, ext)}`;
   return uploadFile(path, file, file.type);
 }

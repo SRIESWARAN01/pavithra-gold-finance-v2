@@ -98,25 +98,27 @@ export async function createBankRePledge(
   };
 
   const cleanData = cleanPayload(rawPayload);
-  const docRef = await addDoc(collection(db, COLLECTION), cleanData);
-  const createdPledge = { id: docRef.id, ...cleanData } as BankRePledge;
 
-  // If immediately active, update physical custody location on the gold collateral items
-  if (finalStatus === 'Active' && data.collateral_item_ids && data.collateral_item_ids.length > 0) {
-    try {
-      const batch = writeBatch(db);
-      data.collateral_item_ids.forEach((itemId) => {
+  // Use a pre-generated doc ref so we can do everything in one transaction
+  const docRef = doc(collection(db, COLLECTION));
+
+  // Atomically create the repledge AND update collateral custody in one transaction
+  await runTransaction(db, async (transaction) => {
+    transaction.set(docRef, cleanData);
+
+    // If immediately active, update physical custody location on the gold collateral items
+    if (finalStatus === 'Active' && data.collateral_item_ids && data.collateral_item_ids.length > 0) {
+      for (const itemId of data.collateral_item_ids) {
         const itemRef = doc(db, COLLATERAL_COLLECTION, itemId);
-        batch.update(itemRef, {
+        transaction.update(itemRef, {
           custody_location: bankCustodyLocation,
           bank_repledge_id: docRef.id,
         });
-      });
-      await batch.commit();
-    } catch (collateralErr) {
-      console.warn('Error updating collateral custody location:', collateralErr);
+      }
     }
-  }
+  });
+
+  const createdPledge = { id: docRef.id, ...cleanData } as BankRePledge;
 
   // Audit log
   try {
@@ -165,42 +167,47 @@ export async function approveBankRePledge(
   reviewNotes?: string
 ): Promise<void> {
   const pRef = doc(db, COLLECTION, repledgeId);
-  const pSnap = await getDoc(pRef);
-  if (!pSnap.exists()) {
-    throw new Error('Bank Re-Pledge record not found');
-  }
-
-  const pledge = pSnap.data() as BankRePledge;
   const now = new Date().toISOString();
-  const bankCustodyLocation = `${pledge.bank_name} (${pledge.bank_branch})`;
 
-  const updateData = {
-    status: 'Active' as BankRePledgeStatus,
-    approved_by: reviewerId,
-    approved_by_name: reviewerName,
-    approved_at: now,
-    custody_location: bankCustodyLocation,
-    remarks: reviewNotes ? `${pledge.remarks || ''}\n[Approval Note]: ${reviewNotes}`.trim() : pledge.remarks,
-  };
+  // Execute the entire approval as a single ACID transaction
+  const pledge = await runTransaction(db, async (transaction) => {
+    const pSnap = await transaction.get(pRef);
+    if (!pSnap.exists()) {
+      throw new Error('Bank Re-Pledge record not found');
+    }
+    const pledgeData = pSnap.data() as BankRePledge;
+    if (pledgeData.status === 'Active' || pledgeData.status === 'Released' || pledgeData.status === 'Closed') {
+      throw new Error(`Bank Re-Pledge is already ${pledgeData.status}. Cannot approve.`);
+    }
 
-  await updateDoc(pRef, updateData);
+    const bankCustodyLocation = `${pledgeData.bank_name} (${pledgeData.bank_branch})`;
 
-  // Update physical custody location of all collateral items to the bank
-  if (pledge.collateral_item_ids && pledge.collateral_item_ids.length > 0) {
-    try {
-      const batch = writeBatch(db);
-      pledge.collateral_item_ids.forEach((itemId) => {
+    const updateData = {
+      status: 'Active' as BankRePledgeStatus,
+      approved_by: reviewerId,
+      approved_by_name: reviewerName,
+      approved_at: now,
+      custody_location: bankCustodyLocation,
+      remarks: reviewNotes ? `${pledgeData.remarks || ''}\n[Approval Note]: ${reviewNotes}`.trim() : pledgeData.remarks,
+    };
+
+    transaction.update(pRef, updateData);
+
+    // Update custody location on all collateral items within the same transaction
+    if (pledgeData.collateral_item_ids && pledgeData.collateral_item_ids.length > 0) {
+      for (const itemId of pledgeData.collateral_item_ids) {
         const itemRef = doc(db, COLLATERAL_COLLECTION, itemId);
-        batch.update(itemRef, {
+        transaction.update(itemRef, {
           custody_location: bankCustodyLocation,
           bank_repledge_id: repledgeId,
         });
-      });
-      await batch.commit();
-    } catch (collateralErr) {
-      console.warn('Error updating collateral items on approval:', collateralErr);
+      }
     }
-  }
+
+    return pledgeData;
+  });
+
+  const bankCustodyLocation = `${pledge.bank_name} (${pledge.bank_branch})`;
 
   // Audit log
   try {
@@ -252,49 +259,51 @@ export async function recordBankRepledgeRelease(
   staffName: string
 ): Promise<void> {
   const pRef = doc(db, COLLECTION, repledgeId);
-  const pSnap = await getDoc(pRef);
-  if (!pSnap.exists()) {
-    throw new Error('Bank Re-Pledge record not found');
-  }
-
-  const pledge = pSnap.data() as BankRePledge;
   const now = new Date().toISOString();
 
-  const updateData = {
-    status: 'Released' as BankRePledgeStatus,
-    custody_location: 'PGF Safe',
-    bank_outstanding: 0,
-    principal_repaid: releaseData.bank_amount_repaid,
-    interest_paid: (pledge.interest_paid || 0) + releaseData.bank_interest_settled,
-    release_date: now,
-    bank_amount_repaid: releaseData.bank_amount_repaid,
-    bank_interest_settled: releaseData.bank_interest_settled,
-    total_bank_settlement: releaseData.total_bank_settlement,
-    bank_release_reference: releaseData.bank_release_reference,
-    released_by: staffId,
-    released_by_name: staffName,
-    released_at: now,
-    release_remarks: releaseData.release_remarks || null,
-  };
+  // Execute the entire release as a single ACID transaction
+  const pledge = await runTransaction(db, async (transaction) => {
+    const pSnap = await transaction.get(pRef);
+    if (!pSnap.exists()) {
+      throw new Error('Bank Re-Pledge record not found');
+    }
+    const pledgeData = pSnap.data() as BankRePledge;
+    if (pledgeData.status === 'Released' || pledgeData.status === 'Closed') {
+      throw new Error(`Bank Re-Pledge is already ${pledgeData.status}. Cannot release again.`);
+    }
 
-  await updateDoc(pRef, cleanPayload(updateData));
+    const updateData = {
+      status: 'Released' as BankRePledgeStatus,
+      custody_location: 'PGF Safe',
+      bank_outstanding: 0,
+      principal_repaid: releaseData.bank_amount_repaid,
+      interest_paid: (pledgeData.interest_paid || 0) + releaseData.bank_interest_settled,
+      release_date: now,
+      bank_amount_repaid: releaseData.bank_amount_repaid,
+      bank_interest_settled: releaseData.bank_interest_settled,
+      total_bank_settlement: releaseData.total_bank_settlement,
+      bank_release_reference: releaseData.bank_release_reference,
+      released_by: staffId,
+      released_by_name: staffName,
+      released_at: now,
+      release_remarks: releaseData.release_remarks || null,
+    };
 
-  // Return physical custody of all collateral items back to 'PGF Safe'
-  if (pledge.collateral_item_ids && pledge.collateral_item_ids.length > 0) {
-    try {
-      const batch = writeBatch(db);
-      pledge.collateral_item_ids.forEach((itemId) => {
+    transaction.update(pRef, cleanPayload(updateData));
+
+    // Return physical custody of all collateral items within the same transaction
+    if (pledgeData.collateral_item_ids && pledgeData.collateral_item_ids.length > 0) {
+      for (const itemId of pledgeData.collateral_item_ids) {
         const itemRef = doc(db, COLLATERAL_COLLECTION, itemId);
-        batch.update(itemRef, {
+        transaction.update(itemRef, {
           custody_location: 'PGF Safe',
           bank_repledge_id: null,
         });
-      });
-      await batch.commit();
-    } catch (collateralErr) {
-      console.warn('Error returning collateral items to PGF safe:', collateralErr);
+      }
     }
-  }
+
+    return pledgeData;
+  });
 
   // Audit log
   try {

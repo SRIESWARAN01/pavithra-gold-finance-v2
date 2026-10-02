@@ -20,12 +20,20 @@ const eslintConfig = defineConfig([
       "react-hooks/purity": "warn",
     },
   },
+  {
+    files: ["electron/**/*.js"],
+    rules: {
+      // Electron entry points are CommonJS and run outside the Next.js module graph.
+      "@typescript-eslint/no-require-imports": "off",
+    },
+  },
   // Override default ignores of eslint-config-next.
   globalIgnores([
     // Default ignores of eslint-config-next:
     ".next/**",
     "out/**",
     "build/**",
+    "dist-electron/**",
     "next-env.d.ts",
     ".firebase/**",
     "scripts/**",

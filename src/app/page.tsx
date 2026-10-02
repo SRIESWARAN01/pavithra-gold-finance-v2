@@ -54,11 +54,17 @@ export default function LoginPage() {
       }
 
       const profile = profileSnap.data();
-      if (profile.status && profile.status !== 'Active') {
+      if (profile.status !== 'Active') {
         throw new Error('This account is inactive. Please contact your branch administrator.');
       }
 
       const profileRole = (profile.role || 'Customer') as UserRole;
+      const tokenResult = await userCredential.user.getIdTokenResult(true);
+      const claimedRole = tokenResult.claims.role;
+      if (typeof claimedRole === 'string' && claimedRole !== profileRole) {
+        await auth.signOut();
+        throw new Error('Your account permissions have changed. Please sign in again or contact your administrator.');
+      }
       const profileName = profile.name || 'Account Holder';
       const customerNumber = profile.customer_number || null;
 

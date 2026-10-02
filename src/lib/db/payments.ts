@@ -408,18 +408,8 @@ export async function recordLoanRelease(data: {
   release_number?: string;
   actor?: { id: string; name: string; role: string };
 }): Promise<{ payment: Payment; release_number: string; loan: any }> {
-  const loanRef = doc(db, 'loans', data.loan_id);
-  const loanSnap = await getDoc(loanRef);
-  if (!loanSnap.exists()) {
-    throw new Error('Loan not found. Cannot perform gold release.');
-  }
-
-  const loan = loanSnap.data();
-  if (['Settled', 'Cancelled', 'Auctioned'].includes(loan.status)) {
-    throw new Error(`Loan is already ${loan.status}.`);
-  }
-
-  // Generate unique atomic Release Voucher Number & Receipt Number
+  // Pre-generate atomic sequential numbers BEFORE the transaction
+  // (counter transactions are separate Firestore transactions)
   const releaseNumber = data.release_number || (await generateReleaseNumber());
   const receiptNumber = await generateReceiptNumber();
 
@@ -437,75 +427,93 @@ export async function recordLoanRelease(data: {
   const now = new Date().toISOString();
   const effectiveReleaseDate = data.release_date || now;
 
-  // Fetch all gold collateral items for this loan and enforce bank re-pledge custody lock (§13.4)
-  const goldQ = query(collection(db, 'gold_collateral'), where('loan_id', '==', data.loan_id));
-  const goldSnap = await getDocs(goldQ);
-
-  for (const gDoc of goldSnap.docs) {
-    const gData = gDoc.data();
-    const custody = (gData.custody_location || '').toLowerCase();
-    if (custody.includes('bank') || gData.status === 'RePledged' || gData.status === 'Repledged') {
-      throw new Error(
-        `CUSTODY_LOCK: Collateral ornament "${gData.item_description || gDoc.id}" is currently pledged with an institutional bank (${gData.custody_location || 'Bank'}). You must first settle the bank re-pledge and return the gold to PGF Safe before releasing it to the customer.`
-      );
-    }
-  }
-
-  const batch = writeBatch(db);
+  const loanRef = doc(db, 'loans', data.loan_id);
   const paymentRef = doc(collection(db, COLLECTION));
 
-  // 1. Final payment record
-  const paymentData = cleanFirestorePayload({
-    loan_id: data.loan_id,
-    customer_id: data.customer_id || loan.customer_id,
-    amount_paid: data.final_amount_paid,
-    interest_portion: data.interest_portion,
-    principal_portion: data.principal_portion,
-    penalty_amount: data.penalty_amount || 0,
-    waiver_amount: data.waiver_amount || 0,
-    payment_type: 'Full_Settlement',
-    mode: data.mode,
-    receipt_number: receiptNumber,
-    release_number: releaseNumber,
-    transaction_ref: data.transaction_ref || null,
-    remarks: data.remarks || `Full settlement and gold collateral release under Voucher ${releaseNumber}`,
-    payment_date: effectiveReleaseDate,
-    slogan_id: sloganId,
-    slogan_text: sloganText,
-    created_at: now,
-  });
-  batch.set(paymentRef, paymentData);
+  // Fetch gold collateral item refs BEFORE the transaction (queries not allowed inside)
+  const goldQ = query(collection(db, 'gold_collateral'), where('loan_id', '==', data.loan_id));
+  const goldSnap = await getDocs(goldQ);
+  const goldRefs = goldSnap.docs.map(gDoc => ({ ref: gDoc.ref, id: gDoc.id }));
 
-  // 2. Update loan record: marked closed with zero outstanding
-  const updatedTotalInterest = (loan.total_interest_paid || 0) + data.interest_portion;
-  const loanUpdate = cleanFirestorePayload({
-    status: 'Settled',
-    closed_at: effectiveReleaseDate,
-    release_date: effectiveReleaseDate,
-    release_number: releaseNumber,
-    total_principal_paid: loan.principal_amount || 0,
-    total_interest_paid: updatedTotalInterest,
-    outstanding_interest: 0,
-    updated_at: now,
-  });
-  batch.update(loanRef, loanUpdate);
+  // Execute the ENTIRE release as a single Firestore transaction (ACID)
+  const result = await runTransaction(db, async (transaction) => {
+    // 1. Re-read loan inside transaction to prevent TOCTOU
+    const loanSnap = await transaction.get(loanRef);
+    if (!loanSnap.exists()) {
+      throw new Error('Loan not found. Cannot perform gold release.');
+    }
+    const loan = loanSnap.data();
+    if (['Settled', 'Cancelled', 'Auctioned'].includes(loan.status)) {
+      throw new Error(`Loan is already ${loan.status}.`);
+    }
 
-  // 3. Mark all pledged gold items as released back to customer
-  for (const gDoc of goldSnap.docs) {
-    batch.update(gDoc.ref, cleanFirestorePayload({
-      custody_location: 'Released to Customer',
-      status: 'Released',
-      released_at: effectiveReleaseDate,
+    // 2. Re-read all gold collateral inside transaction and enforce custody lock
+    for (const { ref, id } of goldRefs) {
+      const gSnap = await transaction.get(ref);
+      if (gSnap.exists()) {
+        const gData = gSnap.data();
+        const custody = (gData.custody_location || '').toLowerCase();
+        if (custody.includes('bank') || gData.status === 'RePledged' || gData.status === 'Repledged') {
+          throw new Error(
+            `CUSTODY_LOCK: Collateral ornament "${gData.item_description || id}" is currently pledged with an institutional bank (${gData.custody_location || 'Bank'}). You must first settle the bank re-pledge and return the gold to PGF Safe before releasing it to the customer.`
+          );
+        }
+      }
+    }
+
+    // 3. Write final payment record
+    const paymentData = cleanFirestorePayload({
+      loan_id: data.loan_id,
+      customer_id: data.customer_id || loan.customer_id,
+      amount_paid: data.final_amount_paid,
+      interest_portion: data.interest_portion,
+      principal_portion: data.principal_portion,
+      penalty_amount: data.penalty_amount || 0,
+      waiver_amount: data.waiver_amount || 0,
+      payment_type: 'Full_Settlement',
+      mode: data.mode,
+      receipt_number: receiptNumber,
       release_number: releaseNumber,
+      transaction_ref: data.transaction_ref || null,
+      remarks: data.remarks || `Full settlement and gold collateral release under Voucher ${releaseNumber}`,
+      payment_date: effectiveReleaseDate,
+      slogan_id: sloganId,
+      slogan_text: sloganText,
+      created_at: now,
+    });
+    transaction.set(paymentRef, paymentData);
+
+    // 4. Update loan record: marked closed with zero outstanding
+    const updatedTotalInterest = (loan.total_interest_paid || 0) + data.interest_portion;
+    const loanUpdate = cleanFirestorePayload({
+      status: 'Settled',
+      closed_at: effectiveReleaseDate,
+      release_date: effectiveReleaseDate,
+      release_number: releaseNumber,
+      total_principal_paid: loan.principal_amount || 0,
+      total_interest_paid: updatedTotalInterest,
+      outstanding_interest: 0,
       updated_at: now,
-    }));
-  }
+    });
+    transaction.update(loanRef, loanUpdate);
 
-  await batch.commit();
+    // 5. Mark all pledged gold items as released back to customer
+    for (const { ref } of goldRefs) {
+      transaction.update(ref, cleanFirestorePayload({
+        custody_location: 'Released to Customer',
+        status: 'Released',
+        released_at: effectiveReleaseDate,
+        release_number: releaseNumber,
+        updated_at: now,
+      }));
+    }
 
-  const paymentRecord = { id: paymentRef.id, ...paymentData } as unknown as Payment;
+    return { paymentData, loanUpdate, loan };
+  });
 
-  // 4. Audit Log
+  const paymentRecord = { id: paymentRef.id, ...result.paymentData } as unknown as Payment;
+
+  // Audit Log (non-critical, outside transaction)
   try {
     const actorId = data.actor?.id || 'admin';
     const actorName = data.actor?.name || 'Authorized Officer';
@@ -518,7 +526,7 @@ export async function recordLoanRelease(data: {
       action_type: 'Loan Closed & Gold Released',
       affected_entity: 'loans',
       affected_entity_id: data.loan_id,
-      old_state: { status: loan.status, principal_amount: loan.principal_amount },
+      old_state: { status: result.loan.status, principal_amount: result.loan.principal_amount },
       new_state: { status: 'Settled', release_number: releaseNumber, release_date: effectiveReleaseDate },
       timestamp: now,
     });
@@ -526,7 +534,7 @@ export async function recordLoanRelease(data: {
     console.warn('Audit logging notice:', auditErr);
   }
 
-  return { payment: paymentRecord, release_number: releaseNumber, loan: { ...loan, ...loanUpdate } };
+  return { payment: paymentRecord, release_number: releaseNumber, loan: { ...result.loan, ...result.loanUpdate } };
 }
 
 /**

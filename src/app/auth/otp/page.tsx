@@ -3,9 +3,6 @@
 import React, { useState, useRef, useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ArrowLeft, ShieldCheck, ShieldAlert, RefreshCw } from 'lucide-react';
-import { auth } from '@/lib/firebase';
-import { sendPasswordResetEmail } from 'firebase/auth';
-import { isFirebaseConfigured } from '@/lib/auth';
 import Logo from '@/components/Logo';
 
 function OTPForm() {
@@ -16,15 +13,7 @@ function OTPForm() {
   const [otp, setOtp] = useState(['', '', '', '', '', '']);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [resendTimer, setResendTimer] = useState(60);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
-
-  // Countdown timer for resend
-  useEffect(() => {
-    if (resendTimer <= 0) return;
-    const interval = setInterval(() => setResendTimer((t) => t - 1), 1000);
-    return () => clearInterval(interval);
-  }, [resendTimer]);
 
   // Auto-focus first input on mount
   useEffect(() => {
@@ -73,45 +62,14 @@ function OTPForm() {
       return;
     }
 
-    try {
-      if (isFirebaseConfigured()) {
-        // Firebase: In production, use Firebase Phone Auth with RecaptchaVerifier
-        // For now, OTP verification is handled via the dev bypass pattern
-        const email = `${phone.trim()}@pgf.local`;
-        // OTP verification would use confirmationResult.confirm(code) in production
-        // For now, dev bypass handles this flow
-        await new Promise(resolve => setTimeout(resolve, 1000));
-      } else {
-        // Dev bypass
-        await new Promise(resolve => setTimeout(resolve, 1500));
-        if (code !== '123456') {
-          throw new Error('Invalid OTP code. Please try again or request a new code.');
-        }
-      }
-
-      router.push(`/auth/reset-password?phone=${phone}`);
-    } catch (err: any) {
-      setError(err.message || 'Verification failed. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+    setError('No active OTP challenge exists. Phone OTP recovery is not configured; contact your branch administrator.');
+    setLoading(false);
   };
 
   const handleResend = async () => {
-    setResendTimer(60);
     setOtp(['', '', '', '', '', '']);
-    setError(null);
+    setError('Phone OTP recovery is not configured. Contact your branch administrator.');
     inputRefs.current[0]?.focus();
-
-    try {
-      if (isFirebaseConfigured()) {
-        // Firebase: In production, resend would re-trigger RecaptchaVerifier
-        const email = `${phone.trim()}@pgf.local`;
-        await sendPasswordResetEmail(auth, email);
-      }
-    } catch (err: any) {
-      setError(err.message || 'Failed to resend OTP. Please try again.');
-    }
   };
 
   return (
@@ -191,24 +149,19 @@ function OTPForm() {
 
           {/* Resend Section */}
           <div className="mt-6 pt-6 border-t border-[#E5E7EB] text-center">
-            {resendTimer > 0 ? (
-              <span className="text-xs text-gray-400">
-                Resend OTP in <span className="text-[#2563EB] font-semibold">{resendTimer}s</span>
-              </span>
-            ) : (
-              <button
-                onClick={handleResend}
-                className="text-xs text-[#2563EB] hover:text-gray-900 font-semibold flex items-center gap-1.5 mx-auto transition"
-              >
-                <RefreshCw size={12} />
-                Resend OTP Code
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={handleResend}
+              className="text-xs text-[#2563EB] hover:text-gray-900 font-semibold flex items-center gap-1.5 mx-auto transition"
+            >
+              <RefreshCw size={12} />
+              Request Help
+            </button>
           </div>
 
           <div className="mt-4 text-center">
             <span className="text-[10px] text-gray-400 font-mono">
-              Dev Bypass &mdash; Use OTP: 123456
+              This page cannot verify a code until phone OTP is configured.
             </span>
           </div>
         </div>

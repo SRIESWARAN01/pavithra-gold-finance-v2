@@ -2,10 +2,7 @@
 
 import React, { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { Phone, ArrowLeft, ShieldAlert, CheckCircle2 } from 'lucide-react';
-import { auth } from '@/lib/firebase';
-import { sendPasswordResetEmail } from 'firebase/auth';
-import { isFirebaseConfigured } from '@/lib/auth';
+import { Phone, ArrowLeft, ShieldAlert } from 'lucide-react';
 import Logo from '@/components/Logo';
 
 export default function ForgotPasswordPage() {
@@ -13,7 +10,6 @@ export default function ForgotPasswordPage() {
   const [phone, setPhone] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [sent, setSent] = useState(false);
 
   const handleSendOTP = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -32,25 +28,8 @@ export default function ForgotPasswordPage() {
       return;
     }
 
-    try {
-      if (isFirebaseConfigured()) {
-        const email = `${phone.trim()}@pgf.local`;
-        await sendPasswordResetEmail(auth, email);
-      } else {
-        // Dev bypass
-        await new Promise(resolve => setTimeout(resolve, 1500));
-      }
-
-      setSent(true);
-      // Navigate to OTP verification page after short delay
-      setTimeout(() => {
-        router.push(`/auth/otp?phone=${phone}`);
-      }, 1200);
-    } catch (err: any) {
-      setError(err.message || 'Failed to send OTP. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+    setError('Phone OTP recovery is not configured. Please contact your branch administrator to reset your password.');
+    setLoading(false);
   };
 
   return (
@@ -74,16 +53,9 @@ export default function ForgotPasswordPage() {
           <div className="mb-8 text-center">
             <h2 className="text-2xl font-semibold text-gray-900 tracking-wide font-outfit">Forgot Password</h2>
             <p className="text-gray-500 text-xs mt-2 leading-relaxed">
-              Enter your registered mobile number. We&apos;ll send a 6-digit OTP to verify your identity.
+              Self-service phone verification is unavailable until an SMS OTP provider is configured.
             </p>
           </div>
-
-          {sent && (
-            <div className="mb-6 p-4 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-600 text-xs flex items-center gap-2.5">
-              <CheckCircle2 size={16} className="shrink-0" />
-              <span>OTP sent successfully to +91 {phone}. Redirecting...</span>
-            </div>
-          )}
 
           {error && (
             <div className="mb-6 p-4 rounded-lg bg-red-50 border border-rose-500/20 text-red-500 text-xs flex items-start gap-2.5">
@@ -104,7 +76,7 @@ export default function ForgotPasswordPage() {
                   placeholder="9876543210"
                   value={phone}
                   onChange={(e) => setPhone(e.target.value)}
-                  disabled={loading || sent}
+                  disabled={loading}
                   maxLength={10}
                   className="w-full bg-[#F3F4F6] border border-[#E5E7EB] focus:border-[#2563EB] focus:ring-1 focus:ring-[#2563EB] text-gray-900 text-sm rounded-lg pl-12 pr-4 py-3 outline-none transition-all placeholder-slate-500 font-inter disabled:opacity-50"
                 />
@@ -113,7 +85,7 @@ export default function ForgotPasswordPage() {
 
             <button
               type="submit"
-              disabled={loading || sent}
+              disabled={loading}
               className="w-full py-3 bg-[#2563EB] hover:bg-[#1D4ED8] disabled:bg-[#2563EB]/50 text-[#F8FAFC] font-semibold rounded-lg text-sm transition-all duration-300 transform active:scale-95 shadow-lg shadow-[#2563EB]/10 flex items-center justify-center gap-2"
             >
               {loading ? (
@@ -121,15 +93,10 @@ export default function ForgotPasswordPage() {
                   <div className="w-4 h-4 border-2 border-[#F8FAFC] border-t-transparent rounded-full animate-spin"></div>
                   <span>Sending OTP...</span>
                 </>
-              ) : sent ? (
-                <>
-                  <CheckCircle2 size={16} />
-                  <span>OTP Sent</span>
-                </>
               ) : (
                 <>
                   <Phone size={16} />
-                  <span>Send OTP</span>
+                  <span>Check Recovery</span>
                 </>
               )}
             </button>
@@ -137,7 +104,7 @@ export default function ForgotPasswordPage() {
 
           <div className="mt-8 pt-6 border-t border-[#E5E7EB] text-center">
             <span className="text-[10px] text-gray-400">
-              OTP will be delivered via SMS to your registered mobile number.
+              No verification code is sent from this page at this time.
             </span>
           </div>
         </div>
