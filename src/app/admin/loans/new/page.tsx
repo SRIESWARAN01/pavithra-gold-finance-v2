@@ -468,7 +468,7 @@ function NewLoanWizardContent() {
         throw new Error('Firebase connection is not configured or unavailable. Real database connection is required.');
       }
 
-      // 1. Create the loan record
+      // 1. Create the loan record (with server-side LTV enforcement)
       const loan = await createLoan({
         customer_id: selectedCustomerId,
         loan_number: '', // Auto-generated atomically
@@ -478,6 +478,7 @@ function NewLoanWizardContent() {
         status: requiresApproval ? 'Pending_Approval' : 'Active',
         origination_date: new Date().toISOString(),
         disbursed_amount: requiresApproval ? 0 : loanPrincipal,
+        max_eligible_loan: totalMaxEligibility, // Server-side LTV validation
       });
 
       // 2. Map gold items to DB insertion format

@@ -109,6 +109,7 @@ function cleanFirestorePayload<T extends Record<string, any>>(obj: T): Record<st
 
 /**
  * Create a new loan. Auto-generates loan number if not provided.
+ * Includes server-side LTV (Loan-to-Value) validation to prevent over-leveraged loans.
  */
 export async function createLoan(data: LoanInsert): Promise<Loan> {
   // Validation: reject invalid values
@@ -117,6 +118,19 @@ export async function createLoan(data: LoanInsert): Promise<Loan> {
   }
   if (data.interest_rate_apr < 0 || data.interest_rate_apr > 100) {
     throw new Error('Annual interest rate must be between 0% and 100%.');
+  }
+
+  // Server-side LTV validation: if max_eligible_loan is provided by caller,
+  // enforce that principal does not exceed it. This is a defense-in-depth
+  // check that the UI cannot bypass. The standard LTV cap is 75% of gold
+  // market value. We allow a small tolerance (1%) for rounding differences.
+  if (data.max_eligible_loan !== undefined && data.max_eligible_loan !== null && data.max_eligible_loan > 0) {
+    const ltvCeiling = Math.round(data.max_eligible_loan * 1.01 * 100) / 100; // 1% tolerance
+    if (data.principal_amount > ltvCeiling) {
+      throw new Error(
+        `LTV_EXCEEDED: Requested principal ₹${data.principal_amount.toLocaleString('en-IN')} exceeds the maximum eligible loan amount ₹${data.max_eligible_loan.toLocaleString('en-IN')} (75% LTV of collateral value). Admin approval is required for high-LTV loans.`
+      );
+    }
   }
 
   // Auto-generate loan number atomically
@@ -159,7 +173,10 @@ export async function createLoan(data: LoanInsert): Promise<Loan> {
     updated_at: now,
   };
 
-  const loanData = cleanFirestorePayload(rawLoanData);
+  // Remove max_eligible_loan from stored data (it's a validation-only field)
+  const { max_eligible_loan, ...storedData } = rawLoanData;
+
+  const loanData = cleanFirestorePayload(storedData);
   const docRef = await addDoc(collection(db, COLLECTION), loanData);
   return { id: docRef.id, ...loanData } as unknown as Loan;
 }

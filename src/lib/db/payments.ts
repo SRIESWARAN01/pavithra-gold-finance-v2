@@ -173,6 +173,12 @@ export async function recordPayment(data: PaymentInsert): Promise<Payment> {
     throw new Error('Payment allocation must equal the amount received.');
   }
 
+  // Idempotency key enforcement: every payment MUST carry a unique key to prevent
+  // duplicate submissions from double-clicks, network retries, or concurrent cashiers.
+  if (!data.idempotency_key || data.idempotency_key.trim().length === 0) {
+    throw new Error('Idempotency key is required. Generate a unique key (e.g. UUID) before submitting a payment.');
+  }
+
   // Idempotency check: if an idempotency key is provided and already exists, return that payment
   if (data.idempotency_key) {
     try {
@@ -354,6 +360,7 @@ export async function recordInterestPayment(data: {
     remarks: data.remarks || `Interest payment covering ${data.interest_period_from} to ${data.interest_period_to}`,
     payment_date: data.payment_date,
     receipt_number: data.receipt_number,
+    idempotency_key: `INT-${data.loan_id}-${data.interest_period_from}-${data.interest_period_to}-${Date.now()}`,
   });
 }
 
@@ -382,6 +389,7 @@ export async function recordPrincipalPayment(data: {
     remarks: data.remarks || 'Principal repayment reduction',
     payment_date: data.payment_date,
     receipt_number: data.receipt_number,
+    idempotency_key: `PRI-${data.loan_id}-${data.amount_paid}-${Date.now()}`,
   });
 }
 

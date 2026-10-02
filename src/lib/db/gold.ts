@@ -14,6 +14,7 @@ import {
   where,
   orderBy,
   writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 import type { GoldCollateral, GoldCollateralInsert, GoldPhoto } from '@/types/database';
 
@@ -66,15 +67,19 @@ export async function addGoldItem(data: GoldCollateralInsert): Promise<GoldColla
 }
 
 /**
- * Add multiple gold items in a batch (used during loan creation wizard).
+ * Add multiple gold items in a transaction (used during loan creation wizard).
+ * Atomic: if any item fails, the entire batch rolls back — no orphaned collateral.
  */
 export async function addGoldItemsBatch(items: GoldCollateralInsert[]): Promise<GoldCollateral[]> {
-  const batch = writeBatch(db);
-  const results: GoldCollateral[] = [];
+  if (items.length === 0) return [];
+
   const now = new Date().toISOString();
 
-  for (const item of items) {
-    const ref = doc(collection(db, COLLECTION));
+  // Pre-generate refs so we can return IDs after the transaction
+  const itemRefs = items.map(() => doc(collection(db, COLLECTION)));
+
+  // Prepare cleaned data outside the transaction (pure computation)
+  const cleanedItems = items.map((item) => {
     const rawData = {
       ...item,
       front_photo_url: item.front_photo_url || null,
@@ -87,13 +92,19 @@ export async function addGoldItemsBatch(items: GoldCollateralInsert[]): Promise<
       storage_bin_id: item.storage_bin_id || 'BIN-DEFAULT',
       created_at: now,
     };
-    const itemData = cleanFirestorePayload(rawData);
-    batch.set(ref, itemData);
-    results.push({ id: ref.id, ...itemData } as unknown as GoldCollateral);
-  }
+    return cleanFirestorePayload(rawData);
+  });
 
-  await batch.commit();
-  return results;
+  await runTransaction(db, async (transaction) => {
+    for (let i = 0; i < cleanedItems.length; i++) {
+      transaction.set(itemRefs[i], cleanedItems[i]);
+    }
+  });
+
+  return cleanedItems.map((itemData, i) => ({
+    id: itemRefs[i].id,
+    ...itemData,
+  } as unknown as GoldCollateral));
 }
 
 /**

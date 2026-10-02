@@ -14,6 +14,7 @@ import {
   where,
   orderBy,
   writeBatch,
+  runTransaction,
 } from 'firebase/firestore';
 import type { InterestAccrual } from '@/types/database';
 
@@ -299,7 +300,7 @@ export async function runDailyInterestCalculation(
 ): Promise<{ processed: number; totalAccrued: number }> {
   const date = targetDate || new Date().toISOString().split('T')[0];
 
-  // Fetch all active loans
+  // Fetch all active loans (queries are safe outside transaction)
   const loansQ = query(
     collection(db, 'loans'),
     where('status', 'in', ['Active', 'Due', 'Overdue', 'Grace_Period'])
@@ -308,56 +309,67 @@ export async function runDailyInterestCalculation(
 
   if (loansSnap.empty) return { processed: 0, totalAccrued: 0 };
 
-  let processed = 0;
-  let totalAccrued = 0;
-  const batch = writeBatch(db);
+  // Collect loan refs that are candidates for accrual
+  const candidateRefs = loansSnap.docs.map(d => ({ ref: d.ref, id: d.id }));
 
-  for (const loanDoc of loansSnap.docs) {
-    const loan = loanDoc.data();
+  // Run the entire batch inside a single Firestore transaction.
+  // Re-reading each loan inside the transaction prevents TOCTOU races where
+  // two concurrent cron invocations could double-accrue the same day.
+  const result = await runTransaction(db, async (transaction) => {
+    let processed = 0;
+    let totalAccrued = 0;
 
-    // Skip if already calculated for this date
-    if (loan.last_interest_calc_date === date) continue;
+    for (const { ref: loanRef, id: loanId } of candidateRefs) {
+      const loanSnap = await transaction.get(loanRef);
+      if (!loanSnap.exists()) continue;
 
-    const remainingPrincipal = (loan.principal_amount || 0) - (loan.total_principal_paid || 0);
-    if (remainingPrincipal <= 0) continue;
+      const loan = loanSnap.data();
 
-    const dailyAmount = calculateDailyInterest(
-      remainingPrincipal,
-      loan.interest_rate_apr,
-      new Date(date)
-    );
+      // Re-check status inside transaction (may have changed)
+      if (!['Active', 'Due', 'Overdue', 'Grace_Period'].includes(loan.status)) continue;
 
-    // Create accrual record
-    const accrualRef = doc(collection(db, COLLECTION));
-    batch.set(accrualRef, {
-      loan_id: loanDoc.id,
-      accrual_date: date,
-      principal_balance: remainingPrincipal,
-      interest_rate_apr: loan.interest_rate_apr,
-      daily_amount: dailyAmount,
-      is_paid: false,
-      paid_at: null,
-      payment_id: null,
-      created_at: new Date().toISOString(),
-    });
+      // Skip if already calculated for this date (idempotent guard)
+      if (loan.last_interest_calc_date === date) continue;
 
-    // Update loan outstanding interest
-    const newOutstanding = (loan.outstanding_interest || 0) + dailyAmount;
-    batch.update(loanDoc.ref, {
-      outstanding_interest: newOutstanding,
-      last_interest_calc_date: date,
-      updated_at: new Date().toISOString(),
-    });
+      const remainingPrincipal = (loan.principal_amount || 0) - (loan.total_principal_paid || 0);
+      if (remainingPrincipal <= 0) continue;
 
-    totalAccrued += dailyAmount;
-    processed++;
-  }
+      const dailyAmount = calculateDailyInterest(
+        remainingPrincipal,
+        loan.interest_rate_apr,
+        new Date(date)
+      );
 
-  if (processed > 0) {
-    await batch.commit();
-  }
+      // Create accrual record
+      const accrualRef = doc(collection(db, COLLECTION));
+      transaction.set(accrualRef, {
+        loan_id: loanId,
+        accrual_date: date,
+        principal_balance: remainingPrincipal,
+        interest_rate_apr: loan.interest_rate_apr,
+        daily_amount: dailyAmount,
+        is_paid: false,
+        paid_at: null,
+        payment_id: null,
+        created_at: new Date().toISOString(),
+      });
 
-  return { processed, totalAccrued: Math.round(totalAccrued * 100) / 100 };
+      // Update loan outstanding interest atomically
+      const newOutstanding = (loan.outstanding_interest || 0) + dailyAmount;
+      transaction.update(loanRef, {
+        outstanding_interest: newOutstanding,
+        last_interest_calc_date: date,
+        updated_at: new Date().toISOString(),
+      });
+
+      totalAccrued += dailyAmount;
+      processed++;
+    }
+
+    return { processed, totalAccrued };
+  });
+
+  return { processed: result.processed, totalAccrued: Math.round(result.totalAccrued * 100) / 100 };
 }
 
 /**
@@ -451,7 +463,7 @@ export async function markInterestAsPaid(
   amountToClear: number
 ): Promise<void> {
   try {
-    // Get unpaid accruals for this loan, oldest first
+    // Get unpaid accruals for this loan, oldest first (query outside transaction)
     const q = query(
       collection(db, COLLECTION),
       where('loan_id', '==', loanId)
@@ -464,21 +476,28 @@ export async function markInterestAsPaid(
       .filter((d) => !d.data().is_paid)
       .sort((a, b) => (a.data().accrual_date || '').localeCompare(b.data().accrual_date || ''));
 
-    let remaining = amountToClear;
-    const batch = writeBatch(db);
-    const now = new Date().toISOString();
+    if (unpaidDocs.length === 0) return;
 
-    for (const d of unpaidDocs) {
-      if (remaining <= 0) break;
-      batch.update(d.ref, {
-        is_paid: true,
-        paid_at: now,
-        payment_id: paymentId,
-      });
-      remaining -= (d.data().daily_amount || 0);
-    }
+    // Use a transaction to atomically mark accruals as paid,
+    // preventing concurrent payments from double-clearing the same accruals.
+    await runTransaction(db, async (transaction) => {
+      const now = new Date().toISOString();
+      let remaining = amountToClear;
 
-    await batch.commit();
+      for (const d of unpaidDocs) {
+        if (remaining <= 0) break;
+        // Re-read inside transaction to confirm still unpaid
+        const freshSnap = await transaction.get(d.ref);
+        if (!freshSnap.exists() || freshSnap.data().is_paid) continue;
+
+        transaction.update(d.ref, {
+          is_paid: true,
+          paid_at: now,
+          payment_id: paymentId,
+        });
+        remaining -= (freshSnap.data().daily_amount || 0);
+      }
+    });
   } catch (err) {
     console.error('Error marking interest as paid:', err);
   }

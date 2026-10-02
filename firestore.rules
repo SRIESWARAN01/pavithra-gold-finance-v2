@@ -45,6 +45,25 @@ service cloud.firestore {
     }
 
     // =========================================================================
+    // Branch Isolation Helpers
+    // Returns the branch_id from the authenticated user's profile, or null.
+    // =========================================================================
+    function getUserBranch() {
+      return isAuthenticated()
+        ? get(/databases/$(database)/documents/profiles/$(request.auth.uid)).data.branch_id
+        : null;
+    }
+
+    // True if the user is Admin/Manager (cross-branch), or if their branch
+    // matches the document's branch_id, or if the document has no branch_id.
+    function isBranchScoped(resourceData) {
+      return isAdmin() || isManager()
+        || !('branch_id' in resourceData)
+        || resourceData.branch_id == null
+        || resourceData.branch_id == getUserBranch();
+    }
+
+    // =========================================================================
     // Profiles
     // =========================================================================
     match /profiles/{profileId} {
@@ -72,8 +91,9 @@ service cloud.firestore {
     // Loans
     // =========================================================================
     match /loans/{loanId} {
-      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
-      allow create, update: if isStaff();
+      allow read: if (isStaff() && (resource == null || isBranchScoped(resource.data))) || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
+      allow create: if isStaff() && isBranchScoped(request.resource.data);
+      allow update: if isStaff() && (resource == null || isBranchScoped(resource.data));
       allow delete: if isAdmin();
     }
 
@@ -81,8 +101,9 @@ service cloud.firestore {
     // Gold Collateral & Photos
     // =========================================================================
     match /gold_collateral/{itemId} {
-      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
-      allow create, update: if isStaff();
+      allow read: if (isStaff() && (resource == null || isBranchScoped(resource.data))) || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
+      allow create: if isStaff();
+      allow update: if isStaff() && (resource == null || isBranchScoped(resource.data));
       allow delete: if isAdmin();
     }
 
@@ -96,8 +117,9 @@ service cloud.firestore {
     // Payments
     // =========================================================================
     match /payments/{paymentId} {
-      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
-      allow create, update: if isStaff();
+      allow read: if (isStaff() && (resource == null || isBranchScoped(resource.data))) || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
+      allow create: if isStaff() && isBranchScoped(request.resource.data);
+      allow update: if isStaff() && (resource == null || isBranchScoped(resource.data));
       allow delete: if isAdmin();
     }
 
@@ -147,7 +169,7 @@ service cloud.firestore {
     // Interest Accruals
     // =========================================================================
     match /interest_accruals/{accrualId} {
-      allow read: if isStaff() || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
+      allow read: if (isStaff() && (resource == null || isBranchScoped(resource.data))) || (isAuthenticated() && (resource == null || resource.data.customer_id == request.auth.uid));
       allow write: if isStaff();
     }
 

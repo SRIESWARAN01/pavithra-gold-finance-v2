@@ -327,6 +327,8 @@ export interface LoanInsert {
   qr_code?: string;
   risk_score?: string;
   current_bin_id?: string;
+  /** Server-side LTV validation: max eligible loan based on collateral value. Not stored in DB. */
+  max_eligible_loan?: number;
 }
 
 /** Fields that can be updated on an existing loan */
